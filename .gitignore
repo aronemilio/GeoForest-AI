@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Entornos y secretos
+.env
+.env.*
+!.env.example
+
+# Editores
+.vscode/
+.idea/
+
+# Datos geoespaciales locales
+data/raw/*
+data/processed/*
+data/masks/*
+
+# Modelos entrenados
+models/*
+!models/.gitkeep
+
+# Temporales
+*.log
+.DS_Store
