@@ -633,3 +633,135 @@ def test_metadata_roundtrip(tmp_path):
 def test_load_metadata_missing_file_raises(tmp_path):
     with pytest.raises(pp.InvalidRasterError):
         pp.load_metadata(tmp_path / "no_existe.json")
+
+
+# ---------------------------------------------------------------------------
+# Pruebas de preparar_tensor_multitemporal y rasterización MINAM
+# ---------------------------------------------------------------------------
+def test_preparar_tensor_multitemporal_memory_file():
+    """Prueba que preparar_tensor_multitemporal funciona con datos sintéticos en memoria (MemoryFile)."""
+    from rasterio.io import MemoryFile
+    from rasterio.transform import from_origin
+
+    mem_files = []
+    try:
+        t0_dict = {}
+        t1_dict = {}
+        tf_10m = from_origin(400000.0, 8900000.0, 10.0, 10.0)
+        tf_20m = from_origin(400000.0, 8900000.0, 20.0, 20.0)
+
+        for name in ("B4", "B8"):
+            data = np.full((1, 8, 8), 2500, dtype="uint16")
+            mf0 = MemoryFile()
+            mem_files.append(mf0)
+            with mf0.open(driver="GTiff", height=8, width=8, count=1, dtype="uint16", crs=CRS_UTM, transform=tf_10m) as ds:
+                ds.write(data)
+            t0_dict[name] = mf0
+
+            mf1 = MemoryFile()
+            mem_files.append(mf1)
+            with mf1.open(driver="GTiff", height=8, width=8, count=1, dtype="uint16", crs=CRS_UTM, transform=tf_10m) as ds:
+                ds.write(data * 2)
+            t1_dict[name] = mf1
+
+        # B11 a 20m (4x4 píxeles) para validar remuestreo bilineal a 10m
+        data_b11 = np.full((1, 4, 4), 3000, dtype="uint16")
+        mf0_b11 = MemoryFile()
+        mem_files.append(mf0_b11)
+        with mf0_b11.open(driver="GTiff", height=4, width=4, count=1, dtype="uint16", crs=CRS_UTM, transform=tf_20m) as ds:
+            ds.write(data_b11)
+        t0_dict["B11"] = mf0_b11
+
+        mf1_b11 = MemoryFile()
+        mem_files.append(mf1_b11)
+        with mf1_b11.open(driver="GTiff", height=4, width=4, count=1, dtype="uint16", crs=CRS_UTM, transform=tf_20m) as ds:
+            ds.write(data_b11 * 2)
+        t1_dict["B11"] = mf1_b11
+
+        # Invocación de la firma requerida
+        tensor, profile = pp.preparar_tensor_multitemporal(t0_dict, t1_dict, target_crs="EPSG:32718")
+
+        # Validación del contrato (6, H, W) escalado a [0.0, 1.0]
+        assert isinstance(tensor, np.ndarray)
+        assert tensor.shape == (6, 8, 8)
+        assert tensor.dtype == np.float32
+        assert 0.0 <= np.min(tensor) <= np.max(tensor) <= 1.0
+        assert np.isclose(tensor[0, 0, 0], 0.25, atol=1e-3)
+        assert np.isclose(tensor[3, 0, 0], 0.50, atol=1e-3)
+
+        # Validación de metadatos del perfil ráster
+        assert profile["count"] == 6
+        assert profile["dtype"] == "float32"
+        assert profile["width"] == 8
+        assert profile["height"] == 8
+        assert profile["crs"] == CRS_UTM
+        assert profile["descriptions"] == ("T0_B4", "T0_B8", "T0_B11", "T1_B4", "T1_B8", "T1_B11")
+    finally:
+        for mf in mem_files:
+            try:
+                mf.close()
+            except Exception:
+                pass
+
+
+def test_preparar_tensor_multitemporal_crs_mismatch():
+    """Verifica que preparar_tensor_multitemporal valida consistencia en EPSG:32718."""
+    from rasterio.io import MemoryFile
+
+    mem_files = []
+    try:
+        t0_dict = {}
+        t1_dict = {}
+        for name in ("B4", "B8", "B11"):
+            arr = np.ones((1, 8, 8), dtype="uint16") * 1000
+            mf0 = MemoryFile()
+            mem_files.append(mf0)
+            with mf0.open(driver="GTiff", height=8, width=8, count=1, dtype="uint16", crs=CRS_UTM, transform=TRANSFORM_10M) as ds:
+                ds.write(arr)
+            t0_dict[name] = mf0
+
+            mf1 = MemoryFile()
+            mem_files.append(mf1)
+            # T1 erróneamente en CRS_WGS84 (EPSG:4326) no proyectado
+            with mf1.open(driver="GTiff", height=8, width=8, count=1, dtype="uint16", crs=CRS_WGS84, transform=TRANSFORM_10M) as ds:
+                ds.write(arr)
+            t1_dict[name] = mf1
+
+        with pytest.raises(pp.CRSMismatchError):
+            pp.preparar_tensor_multitemporal(t0_dict, t1_dict, target_crs="EPSG:32718")
+    finally:
+        for mf in mem_files:
+            try:
+                mf.close()
+            except Exception:
+                pass
+
+
+def test_preparar_tensor_multitemporal_sequence_inputs(s2_triplet):
+    """Verifica entrada por secuencia de rutas y dimensiones."""
+    tensor, profile = pp.preparar_tensor_multitemporal(
+        [s2_triplet["B4"], s2_triplet["B8"], s2_triplet["B11"]],
+        [s2_triplet["B4"], s2_triplet["B8"], s2_triplet["B11"]],
+    )
+    assert tensor.shape == (6, HEIGHT, WIDTH)
+    assert tensor.dtype == np.float32
+    assert profile["count"] == 6
+
+
+def test_rasterizar_capa_geobosques_minam(grid):
+    """Verifica rasterización categórica de Geobosques con vecino más cercano."""
+    gdf = gpd.GeoDataFrame(
+        {
+            "deforest": ["perdida", "bosque"],
+            "geometry": [
+                box(400000.0, 8899950.0, 400040.0, 8900000.0),
+                box(400040.0, 8899950.0, 400080.0, 8900000.0),
+            ],
+        },
+        crs=CRS_UTM,
+    )
+    mask = pp.rasterizar_capa_geobosques_minam(gdf, grid, campo_evento="deforest")
+    assert isinstance(mask, pp.LabelMask)
+    assert mask.array.shape == (HEIGHT, WIDTH)
+    assert set(np.unique(mask.array)).issubset({0, 1, 2})
+

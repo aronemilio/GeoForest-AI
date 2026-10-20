@@ -1,0 +1,126 @@
+"""
+GeoForest-AI Huánuco.
+
+Sistema de detección y monitoreo satelital de deforestación para la región
+Huánuco (Perú), integrando preprocesamiento GIS, redes neuronales U-Net e
+inferencia de alto rendimiento con ONNX Runtime.
+"""
+
+from __future__ import annotations
+
+from src.infer import (
+    ConfidenceLevel,
+    ForestAlert,
+    ForestPredictionResult,
+    InferenceError,
+    InvalidInputShapeError,
+    ModelNotFoundError,
+    ONNXForestPredictor,
+    WindowConfigError,
+    binarize,
+    calculate_affected_area,
+    create_blend_window,
+    extract_alerts,
+)
+from src.preprocess import (
+    CRSMismatchError,
+    DataKind,
+    GridMismatchError,
+    GridSpec,
+    InvalidRasterError,
+    InvalidVectorError,
+    LabelMask,
+    LabelRule,
+    LabelRuleError,
+    MissingCRSError,
+    PreparedBands,
+    PreprocessError,
+    RasterProfile,
+    RasterSource,
+    ResamplingPolicy,
+    ResolutionMismatchError,
+    SENTINEL2_BANDS,
+    compute_nbr,
+    compute_ndvi,
+    prepare_s2_bands,
+    preparar_tensor_multitemporal,
+    rasterizar_capa_geobosques_minam,
+    stack_bands,
+)
+from src.unet import (
+    DEFAULT_BASE_FEATURES,
+    DEFAULT_IN_CHANNELS,
+    DEFAULT_NUM_CLASSES,
+    DEFAULT_S2_CHANNELS,
+    DoubleConv,
+    Down,
+    ModelConfigError,
+    ModelExportError,
+    OutConv,
+    UNet,
+    UNetError,
+    Up,
+    create_sentinel2_unet,
+    export_unet_to_onnx,
+    generate_reference_model,
+)
+
+__version__ = "0.1.0"
+
+__all__ = [
+    # Metadatos
+    "__version__",
+    # GIS / Preprocesamiento
+    "CRSMismatchError",
+    "DataKind",
+    "GridMismatchError",
+    "GridSpec",
+    "InvalidRasterError",
+    "InvalidVectorError",
+    "LabelMask",
+    "LabelRule",
+    "LabelRuleError",
+    "MissingCRSError",
+    "PreparedBands",
+    "PreprocessError",
+    "RasterProfile",
+    "RasterSource",
+    "ResamplingPolicy",
+    "ResolutionMismatchError",
+    "SENTINEL2_BANDS",
+    "compute_nbr",
+    "compute_ndvi",
+    "prepare_s2_bands",
+    "preparar_tensor_multitemporal",
+    "rasterizar_capa_geobosques_minam",
+    "stack_bands",
+    # U-Net PyTorch
+    "DEFAULT_BASE_FEATURES",
+    "DEFAULT_IN_CHANNELS",
+    "DEFAULT_NUM_CLASSES",
+    "DEFAULT_S2_CHANNELS",
+    "DoubleConv",
+    "Down",
+    "ModelConfigError",
+    "ModelExportError",
+    "OutConv",
+    "UNet",
+    "UNetError",
+    "Up",
+    "create_sentinel2_unet",
+    "export_unet_to_onnx",
+    "generate_reference_model",
+    # Inferencia ONNX
+    "ConfidenceLevel",
+    "ForestAlert",
+    "ForestPredictionResult",
+    "InferenceError",
+    "InvalidInputShapeError",
+    "ModelNotFoundError",
+    "ONNXForestPredictor",
+    "WindowConfigError",
+    "binarize",
+    "calculate_affected_area",
+    "create_blend_window",
+    "extract_alerts",
+]

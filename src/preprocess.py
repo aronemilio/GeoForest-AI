@@ -211,8 +211,15 @@ class LabelRuleError(PreprocessError):
 # ---------------------------------------------------------------------------
 # Utilidades internas
 # ---------------------------------------------------------------------------
-def _as_path(path: str | Path) -> Path:
-    """Convierte a ``Path`` y valida su existencia sin abrir el archivo."""
+def _as_path(path: str | Path | Any) -> Path | str:
+    """Convierte a ``Path`` o ruta virtual ``/vsi`` y valida su existencia sin abrir el archivo."""
+    if not isinstance(path, (str, Path)) and hasattr(path, "name"):
+        name_str = str(path.name)
+        if name_str.startswith("/vsi"):
+            return name_str
+        path = name_str
+    if isinstance(path, str) and path.startswith("/vsi"):
+        return path
     p = Path(path)
     if not p.exists():
         raise InvalidRasterError(f"No existe el archivo: {p}")
@@ -585,7 +592,7 @@ class RasterSource:
             el archivo).
     """
 
-    path: Path
+    path: Path | str
     band: int = 1
     scale_factor: float | None = None
     offset: float = 0.0
@@ -611,18 +618,40 @@ def _coerce_source(value: Any) -> RasterSource:
     """
     if isinstance(value, RasterSource):
         return value
+    if not isinstance(value, (str, Path)) and hasattr(value, "name"):
+        name_s = str(value.name)
+        p = name_s if name_s.startswith("/vsi") else Path(name_s)
+        return RasterSource(path=p, band=1)
+    if isinstance(value, str) and value.startswith("/vsi"):
+        return RasterSource(path=value, band=1)
     if isinstance(value, (str, Path)):
         return RasterSource(path=Path(value), band=1)
     if isinstance(value, Mapping):
+        path_val = value["path"]
+        if not isinstance(path_val, (str, Path)) and hasattr(path_val, "name"):
+            name_s = str(path_val.name)
+            p_val = name_s if name_s.startswith("/vsi") else Path(name_s)
+        elif isinstance(path_val, str) and path_val.startswith("/vsi"):
+            p_val = path_val
+        else:
+            p_val = Path(path_val)
         return RasterSource(
-            path=Path(value["path"]),
+            path=p_val,
             band=int(value.get("band", 1)),
             scale_factor=value.get("scale_factor"),
             offset=float(value.get("offset", 0.0)),
             nodata=value.get("nodata"),
         )
     if isinstance(value, (tuple, list)) and len(value) == 2:
-        return RasterSource(path=Path(value[0]), band=int(value[1]))
+        p_val = value[0]
+        if not isinstance(p_val, (str, Path)) and hasattr(p_val, "name"):
+            name_s = str(p_val.name)
+            p_val = name_s if name_s.startswith("/vsi") else Path(name_s)
+        elif isinstance(p_val, str) and p_val.startswith("/vsi"):
+            pass
+        else:
+            p_val = Path(p_val)
+        return RasterSource(path=p_val, band=int(value[1]))
     raise TypeError(f"fuente de banda no soportada: {type(value).__name__}")
 
 
@@ -1560,3 +1589,208 @@ def load_metadata(path: str | Path) -> dict[str, Any]:
             return json.load(fh)
     except json.JSONDecodeError as exc:
         raise InvalidRasterError(f"Metadatos JSON inválidos en {p}: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Contrato de preparación multitemporal y rasterización MINAM
+# ---------------------------------------------------------------------------
+def _parse_time_sources(sources: Any) -> dict[str, Any]:
+    """Normaliza las fuentes de bandas (B4, B8, B11) para una fecha temporal."""
+    if isinstance(sources, Mapping):
+        res = {}
+        for b in ("B4", "B8", "B11"):
+            if b in sources:
+                res[b] = sources[b]
+            elif b.lower() in sources:
+                res[b] = sources[b.lower()]
+            else:
+                raise BandError(f"Falta la banda requerida '{b}' en las fuentes proporcionadas.")
+        return res
+    if isinstance(sources, (list, tuple)):
+        if len(sources) == 3:
+            return {"B4": sources[0], "B8": sources[1], "B11": sources[2]}
+        elif len(sources) == 1:
+            sources = sources[0]
+        else:
+            raise BandError(
+                f"Se esperaban 3 bandas (B4, B8, B11) o 1 archivo multibanda, "
+                f"se recibieron {len(sources)} elementos."
+            )
+    return {
+        "B4": (sources, 1),
+        "B8": (sources, 2),
+        "B11": (sources, 3),
+    }
+
+
+def preparar_tensor_multitemporal(
+    t0_paths: Mapping[str, Any] | Sequence[Any] | str | Path | Any,
+    t1_paths: Mapping[str, Any] | Sequence[Any] | str | Path | Any,
+    *,
+    target_crs: str | CRS = "EPSG:32718",
+    normalize: bool = True,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """
+    Carga, valida y normaliza bandas multitemporales Sentinel-2 para el pipeline de inferencia.
+
+    Genera una tupla ``(tensor_numpy, profile)`` con dimensiones exactas ``(6, H, W)``
+    escaladas a ``[0.0, 1.0]``, con B11 remuestreada a 10 m vía interpolación bilineal
+    y validando consistencia en coordenadas proyectadas EPSG:32718 (UTM Zona 18S para Huánuco).
+
+    Canales de salida del tensor (6, H, W):
+        - Canal 0: T0 B4 (Rojo, 10 m)
+        - Canal 1: T0 B8 (NIR, 10 m)
+        - Canal 2: T0 B11 (SWIR, remuestreada a 10 m vía bilineal)
+        - Canal 3: T1 B4 (Rojo, 10 m)
+        - Canal 4: T1 B8 (NIR, 10 m)
+        - Canal 5: T1 B11 (SWIR, remuestreada a 10 m vía bilineal)
+
+    Args:
+        t0_paths: Fuentes de bandas para T0 (antes). Dict {'B4', 'B8', 'B11'},
+            secuencia [B4, B8, B11], o archivo multibanda.
+        t1_paths: Fuentes de bandas para T1 (después). Dict {'B4', 'B8', 'B11'},
+            secuencia [B4, B8, B11], o archivo multibanda.
+        target_crs: CRS objetivo esperado (por defecto "EPSG:32718").
+        normalize: Si es True, escala la reflectancia a [0.0, 1.0].
+
+    Returns:
+        tuple[np.ndarray, dict[str, Any]]:
+            - tensor_numpy: Arreglo (6, H, W) en float32 con valores en [0.0, 1.0].
+            - profile: Perfil de Rasterio con CRS, transform, dimensiones y metadatos.
+
+    Raises:
+        MissingCRSError: Si algún archivo carece de CRS.
+        CRSMismatchError: Si el CRS de entrada no coincide con target_crs proyectado.
+        BandError: Si faltan bandas requeridas o el número de bandas es insuficiente.
+        GridMismatchError: Si las cuadrículas no se pueden alinear.
+    """
+    s0 = _parse_time_sources(t0_paths)
+    s1 = _parse_time_sources(t1_paths)
+
+    expected_crs = target_crs if isinstance(target_crs, CRS) else CRS.from_user_input(target_crs)
+    if not expected_crs.is_projected:
+        raise CRSMismatchError(
+            f"target_crs debe ser un CRS proyectado (como EPSG:32718 UTM Zona 18S), "
+            f"se recibió: {expected_crs}."
+        )
+
+    # Validar consistencia de CRS en todas las fuentes
+    for label, s_dict in (("T0", s0), ("T1", s1)):
+        for name, src in s_dict.items():
+            coerced = _coerce_source(src)
+            prof = open_geotiff(coerced.path)
+            if prof.crs is None:
+                raise MissingCRSError(
+                    f"La fuente para {label} {name} ({coerced.path}) no contiene CRS georreferenciado."
+                )
+            if not _crs_equal(prof.crs, expected_crs):
+                raise CRSMismatchError(
+                    f"CRS inconsistente en {label} {name}: se encontró {prof.crs}, "
+                    f"se requiere coordenadas proyectadas {expected_crs} (UTM Zona 18S)."
+                )
+
+    # Referencia espacial a 10m obtenida de B4 de T0
+    src_b4_t0 = _coerce_source(s0["B4"])
+    prof_b4_t0 = open_geotiff(src_b4_t0.path)
+    grid_10m = GridSpec.from_profile(prof_b4_t0)
+
+    # Preparar bandas de T0 y T1 alineadas a grid_10m con remuestreo bilineal explícito
+    prep_t0 = prepare_s2_bands(
+        s0,
+        reference=grid_10m,
+        resampling=Resampling.bilinear,
+    )
+    prep_t1 = prepare_s2_bands(
+        s1,
+        reference=grid_10m,
+        resampling=Resampling.bilinear,
+    )
+
+    t0_arrays = [prep_t0.arrays["B4"], prep_t0.arrays["B8"], prep_t0.arrays["B11"]]
+    t1_arrays = [prep_t1.arrays["B4"], prep_t1.arrays["B8"], prep_t1.arrays["B11"]]
+
+    raw_tensor = np.stack(t0_arrays + t1_arrays, axis=0).astype(np.float32)
+    raw_tensor = np.nan_to_num(raw_tensor, nan=0.0, posinf=1.0, neginf=0.0)
+
+    if normalize:
+        max_val = float(np.max(raw_tensor))
+        if max_val > 1.0:
+            raw_tensor = raw_tensor / 10000.0
+        raw_tensor = np.clip(raw_tensor, 0.0, 1.0).astype(np.float32)
+
+    profile: dict[str, Any] = {
+        "driver": "GTiff",
+        "dtype": "float32",
+        "nodata": None,
+        "width": int(grid_10m.width),
+        "height": int(grid_10m.height),
+        "count": 6,
+        "crs": expected_crs,
+        "transform": grid_10m.transform,
+        "descriptions": (
+            "T0_B4",
+            "T0_B8",
+            "T0_B11",
+            "T1_B4",
+            "T1_B8",
+            "T1_B11",
+        ),
+    }
+
+    return raw_tensor, profile
+
+
+def rasterizar_capa_geobosques_minam(
+    gdf: "gpd.GeoDataFrame",
+    grid: GridSpec,
+    rule: LabelRule | None = None,
+    *,
+    campo_evento: str = "deforest",
+    all_touched: bool = False,
+    dtype: str = "uint8",
+) -> LabelMask:
+    """
+    Rasteriza capas vectoriales de Geobosques (MINAM) mediante vecino más cercano (nearest neighbor).
+
+    Garantiza una asignación categórica estricta sin interpolación continua entre clases de
+    cobertura forestal o pérdida de bosque.
+
+    Args:
+        gdf: Vector GeoDataFrame de referencia de Geobosques MINAM.
+        grid: Cuadrícula de destino GridSpec con CRS proyectado y transform definido.
+        rule: Regla LabelRule explícita. Si es None, se genera automáticamente una regla
+            basada en ``campo_evento``.
+        campo_evento: Nombre del atributo a clasificar si ``rule`` es None.
+        all_touched: Si True, incluye cualquier píxel tocado; si False (por defecto),
+            emplea la regla de centro de píxel por vecino más cercano.
+        dtype: Tipo entero ('uint8', 'int32').
+
+    Returns:
+        LabelMask rasterizada con vecino más cercano.
+    """
+    if rule is None:
+        if campo_evento not in gdf.columns:
+            posibles = ["perdida", "cambio", "bosque", "gridcode", "dn", "tipo", "id"]
+            col_encontrada = next((c for c in posibles if c in gdf.columns), None)
+            if col_encontrada is not None:
+                campo_usar = col_encontrada
+            else:
+                campo_usar = next((c for c in gdf.columns if c != "geometry"), campo_evento)
+        else:
+            campo_usar = campo_evento
+
+        valores_unicos = set(gdf[campo_usar].dropna().unique().tolist())
+        mapping = {}
+        for i, val in enumerate(sorted(valores_unicos, key=str), start=1):
+            mapping[val] = i
+
+        rule = LabelRule(
+            field=campo_usar,
+            mapping=mapping if mapping else {1: 1},
+            background_value=0,
+            allow_unmapped=True,
+            unmapped_value=0,
+        )
+
+    return rasterize_reference(gdf, grid, rule, all_touched=all_touched, dtype=dtype)
+

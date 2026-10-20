@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1600, height=360" />
+    <title>GeoForest-AI Huánuco — portada en movimiento</title>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 1600px;
+        height: 360px;
+        overflow: hidden;
+        background: #d7e4d9;
+      }
+      #root {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+      }
+      .clip {
+        position: absolute;
+        inset: 0;
+      }
+      #escena {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="8"
+      data-width="1600"
+      data-height="360"
+    >
+      <div id="escena-clip" class="clip" data-start="0" data-duration="8" data-track-index="0">
+        <!-- Cordilleras del Bosque Montano de Carpish entre la niebla.
+             Decorativo: no codifica ninguna alerta ni dato. -->
+        <svg
+          id="escena"
+          viewBox="0 0 1200 270"
+          xmlns="http://www.w3.org/2000/svg"
+          preserveAspectRatio="xMidYMid meet"
+          data-layout-allow-overflow
+          role="img"
+          aria-label="Cordilleras del bosque nuboso de Carpish entre la niebla en movimiento"
+        >
+          <defs>
+            <linearGradient id="gfCielo" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#EAF1E6" />
+              <stop offset="100%" stop-color="#D7E4D9" />
+            </linearGradient>
+            <radialGradient id="gfSol" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="#EBC57F" stop-opacity="0.95" />
+              <stop offset="55%" stop-color="#EBC57F" stop-opacity="0.3" />
+              <stop offset="100%" stop-color="#EBC57F" stop-opacity="0" />
+            </radialGradient>
+            <linearGradient id="gfNiebla" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stop-color="#F3F7F2" stop-opacity="0" />
+              <stop offset="16%" stop-color="#F3F7F2" stop-opacity="1" />
+              <stop offset="84%" stop-color="#F3F7F2" stop-opacity="1" />
+              <stop offset="100%" stop-color="#F3F7F2" stop-opacity="0" />
+            </linearGradient>
+            <linearGradient id="gfNieblaBaja" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#F7FAF5" stop-opacity="0" />
+              <stop offset="60%" stop-color="#F7FAF5" stop-opacity="0.85" />
+              <stop offset="100%" stop-color="#F7FAF5" stop-opacity="0.55" />
+            </linearGradient>
+            <!-- Desvanecido vertical: quita el borde duro de las bandas de niebla -->
+            <linearGradient id="gfFadeV" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0" />
+              <stop offset="42%" stop-color="#FFFFFF" stop-opacity="1" />
+              <stop offset="58%" stop-color="#FFFFFF" stop-opacity="1" />
+              <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0" />
+            </linearGradient>
+            <mask id="mkNiebla1" maskUnits="userSpaceOnUse" x="-220" y="134" width="1640" height="66">
+              <rect x="-220" y="134" width="1640" height="66" fill="url(#gfFadeV)" />
+            </mask>
+            <mask id="mkNiebla2" maskUnits="userSpaceOnUse" x="-220" y="174" width="1640" height="56">
+              <rect x="-220" y="174" width="1640" height="56" fill="url(#gfFadeV)" />
+            </mask>
+          </defs>
+
+          <!-- Cielo -->
+          <rect x="0" y="0" width="1200" height="270" fill="url(#gfCielo)" />
+
+          <!-- Sol que respira -->
+          <circle id="sol" cx="838" cy="74" r="84" fill="url(#gfSol)" />
+
+          <!-- Cresta lejana (parallax) -->
+          <g id="crestaLejos">
+            <path
+              d="M0 150 C90 108 175 128 268 112 C372 94 438 132 540 120 C648 107 706 78 806 100 C892 119 962 138 1052 124 C1122 113 1162 130 1200 118 L1200 270 L0 270 Z"
+              fill="#B7CCBC"
+            />
+          </g>
+
+          <!-- Niebla alta (deriva a la derecha) -->
+          <g id="niebla1" mask="url(#mkNiebla1)">
+            <rect x="-180" y="146" width="1560" height="42" fill="url(#gfNiebla)" opacity="0.62" />
+          </g>
+
+          <!-- Cresta media -->
+          <g id="crestaMedia">
+            <path
+              d="M0 186 C118 148 220 184 342 170 C470 155 560 192 690 178 C820 164 902 196 1012 180 C1102 167 1152 186 1200 176 L1200 270 L0 270 Z"
+              fill="#7FA98D"
+            />
+          </g>
+
+          <!-- Niebla media (deriva a la izquierda) -->
+          <g id="niebla2" mask="url(#mkNiebla2)">
+            <rect x="-180" y="184" width="1560" height="34" fill="url(#gfNiebla)" opacity="0.5" />
+          </g>
+
+          <!-- Cresta cercana -->
+          <g id="crestaCerca">
+            <path
+              d="M0 218 C150 194 300 222 460 212 C620 202 720 228 880 216 C1010 206 1120 226 1200 216 L1200 270 L0 270 Z"
+              fill="#2E6B4E"
+            />
+          </g>
+
+          <!-- Coníferas (vaivén suave, dos rodales) -->
+          <g id="arbolesIzq" fill="#1C4A34">
+            <path transform="translate(150,224)" d="M0 -48 L16 -12 L7 -12 L20 18 L-20 18 L-7 -12 L-16 -12 Z" />
+            <path transform="translate(198,220) scale(0.8)" d="M0 -48 L16 -12 L7 -12 L20 18 L-20 18 L-7 -12 L-16 -12 Z" />
+            <path transform="translate(240,226) scale(0.62)" d="M0 -48 L16 -12 L7 -12 L20 18 L-20 18 L-7 -12 L-16 -12 Z" />
+            <path transform="translate(300,222) scale(0.72)" d="M0 -48 L16 -12 L7 -12 L20 18 L-20 18 L-7 -12 L-16 -12 Z" />
+          </g>
+          <g id="arbolesDer" fill="#1C4A34">
+            <path transform="translate(930,222) scale(0.95)" d="M0 -48 L16 -12 L7 -12 L20 18 L-20 18 L-7 -12 L-16 -12 Z" />
+            <path transform="translate(978,226) scale(0.7)" d="M0 -48 L16 -12 L7 -12 L20 18 L-20 18 L-7 -12 L-16 -12 Z" />
+            <path transform="translate(1022,220) scale(0.8)" d="M0 -48 L16 -12 L7 -12 L20 18 L-20 18 L-7 -12 L-16 -12 Z" />
+          </g>
+
+          <!-- Niebla baja que respira -->
+          <rect id="nieblaBaja" x="0" y="196" width="1200" height="74" fill="url(#gfNieblaBaja)" />
+
+          <!-- Aves que cruzan (entran y salen de cuadro) -->
+          <g id="aves" fill="none" stroke="#2E6B4E" stroke-width="2.2" stroke-linecap="round" opacity="0.55">
+            <path d="M0 80 q7 -6 14 0" />
+            <path d="M20 92 q6 -5 12 0" />
+            <path d="M38 74 q5 -4 10 0" />
+          </g>
+        </svg>
+      </div>
+    </div>
+    <script>
+      const tl = gsap.timeline({ paused: true, defaults: { ease: "sine.inOut" } });
+
+      // Sol: respira (un ciclo completo en 8 s -> bucle sin costura)
+      tl.fromTo(
+        "#sol",
+        { scale: 1, opacity: 0.92, transformOrigin: "50% 50%" },
+        { scale: 1.07, opacity: 0.76, duration: 4, yoyo: true, repeat: 1 },
+        0
+      );
+
+      // Niebla: dos bandas derivan en sentidos opuestos.
+      // Tween de 4 s con yoyo + repeat(1) => vuelve al origen a los 8 s, así el
+      // fotograma final coincide con el inicial (bucle sin costura).
+      tl.fromTo("#niebla1", { x: -46 }, { x: 46, duration: 4, yoyo: true, repeat: 1 }, 0);
+      tl.fromTo("#niebla2", { x: 40 }, { x: -40, duration: 4, yoyo: true, repeat: 1 }, 0);
+
+      // Crestas: parallax apenas perceptible (profundidad)
+      tl.fromTo("#crestaLejos", { x: -4 }, { x: 4, duration: 4, yoyo: true, repeat: 1 }, 0);
+      tl.fromTo("#crestaCerca", { x: 3 }, { x: -3, duration: 4, yoyo: true, repeat: 1 }, 0);
+
+      // Coníferas: vaivén leve sobre su base
+      tl.fromTo(
+        "#arbolesIzq",
+        { rotation: -1.1, svgOrigin: "225 226" },
+        { rotation: 1.1, duration: 4, yoyo: true, repeat: 1 },
+        0
+      );
+      tl.fromTo(
+        "#arbolesDer",
+        { rotation: 1.0, svgOrigin: "975 226" },
+        { rotation: -1.0, duration: 4, yoyo: true, repeat: 1 },
+        0
+      );
+
+      // Niebla baja: respiración de densidad
+      tl.fromTo("#nieblaBaja", { opacity: 0.4 }, { opacity: 0.68, duration: 4, yoyo: true, repeat: 1 }, 0);
+
+      // Aves: cruce lineal (fuera de cuadro en t=0 y t=8 -> sin salto al repetir)
+      tl.fromTo("#aves", { x: -90 }, { x: 1300, duration: 8, ease: "none" }, 0);
+      tl.fromTo("#aves", { y: 0 }, { y: -9, duration: 1.6, yoyo: true, repeat: 4, ease: "sine.inOut" }, 0);
+
+      window.__timelines["main"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>

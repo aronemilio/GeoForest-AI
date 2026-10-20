@@ -1,0 +1,58 @@
+# =============================================================================
+# GeoForest-AI Huánuco — Tema «Niebla de dosel»
+# Identidad visual inspirada en el bosque nuboso montano de Carpish y el
+# corredor del Valle del Huallaga (Huánuco, Perú).
+#
+# Los colores, tipografías, radios y paletas de gráficos viven aquí.
+# El adorno decorativo (cordilleras entre la niebla) vive en la app.
+# =============================================================================
+
+[theme]
+base = "light"
+
+# --- Color -------------------------------------------------------------------
+# Verde de dosel lo bastante oscuro para texto blanco en botones (contraste AA).
+primaryColor = "#1B5E43"
+backgroundColor = "#EEF3EA"          # niebla clara (verde muy suave)
+secondaryBackgroundColor = "#DEE7DA" # musgo / liquen (distinto del fondo)
+textColor = "#16241C"                # sombra de dosel (alto contraste)
+linkColor = "#1B5E43"
+borderColor = "#C3D2C0"
+codeBackgroundColor = "#E4EBE0"
+
+# --- Tipografía --------------------------------------------------------------
+# Titulares: serif orgánico (Fraunces). Cuerpo: humanista (Karla).
+font = "'Karla':https://fonts.googleapis.com/css2?family=Karla:wght@400;500;600;700&display=swap"
+headingFont = "'Fraunces':https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&display=swap"
+
+# --- Bordes / radios ---------------------------------------------------------
+baseRadius = "0.6rem"
+buttonRadius = "0.6rem"
+showWidgetBorder = true
+showSidebarBorder = true
+linkUnderline = false
+
+# --- Paletas de datos (bosque) ----------------------------------------------
+chartCategoricalColors = ["#1B5E43", "#3E8E63", "#7FA98D", "#B6CBBB", "#C77D3A", "#6E8B9E", "#8A6F4E"]
+chartSequentialColors = ["#F1F6EF", "#DDE9DC", "#C2D8C5", "#A2C4A9", "#7FA98D", "#5D8E70", "#3E7357", "#2A5A42", "#1B422F", "#0F2C1F"]
+chartDivergingColors = ["#0F2C1F", "#1B422F", "#2A5A42", "#5D8E70", "#B6CBBB", "#E9DFCF", "#D9A96A", "#C77D3A", "#A6452A", "#6E2A18"]
+
+dataframeBorderColor = "#C3D2C0"
+dataframeHeaderBackgroundColor = "#1B422F"
+dataframeHeaderTextColor = "#EAF1E7"
+
+paddingTop = "2rem"
+paddingBottom = "2rem"
+
+# --- Barra lateral: dosel profundo (contraste deliberado con la niebla) ------
+[theme.sidebar]
+backgroundColor = "#12301F"
+secondaryBackgroundColor = "#1B422F"
+codeBackgroundColor = "#1B422F"
+textColor = "#EAF1E7"
+borderColor = "#2A5A42"
+primaryColor = "#3E8E63"
+linkColor = "#A9D3B4"
+# Recuadros informativos en clave bosque (por defecto serían azules).
+blueBackgroundColor = "#173A2A"
+blueTextColor = "#CFE8D6"
