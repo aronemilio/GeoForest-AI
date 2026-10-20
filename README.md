@@ -12,12 +12,10 @@ Sistema experimental de alerta temprana para identificar posibles cambios en la 
 
 ### 1. Panel de monitoreo e interfaz (`app/main.py`)
 
-Dashboard en Streamlit con tema «Niebla de dosel» (verde forestal + mist). Pestañas:
+Dashboard principal en Streamlit con tema «Niebla de dosel» (verde forestal + mist). Modos y módulos integrados:
 
-- **🗺️ Panel de Monitoreo GIS**: KPIs (alertas simuladas activas, superficie estimada simulada, severidad alta, confianza promedio simulada), filtros dinámicos por zona, tipo de evento y severidad, mapa folium (capas base satélite/OSM/topográfico), polígonos de alerta, exportación CSV, GeoJSON y expediente demostrativo.
-- **⏱️ Modo Pitch (Simulador Temporal)**: simulación temporal determinista (PRNG Mulberry32, bit-a-bit coherente con el visor React).
-- **🧠 Benchmark U-Net ONNX (métricas simuladas)**: plantilla del reporte de IoU, F1, latencia y matriz de confusión; marcada como no medida. Peso real del `.onnx` servido (≈ 31,1 MB, FP32, sin cuantizar).
-- **🌐 Visor Táctico Web (React :5174)**: integra (si responde) un subproyecto externo en `/home/emi/Proyectos/GeoForest-AI-Web`; degrada con aviso claro si el servidor no está en marcha.
+- **🌟 Presentación Ejecutiva Unificada (Pitch Interactivo)**: flujo ejecutivo unificado con narrativa operativa, mapa interactivo, simulador temporal multitemporal (PRNG Mulberry32 determinista `seed=42`), laboratorio de inferencia ONNX en vivo, métricas de referencia y descarga de expediente.
+- **🗺️ Consola Integral SIG & Fiscalización**: KPIs (alertas simuladas activas, superficie estimada simulada, severidad alta, confianza promedio simulada), filtros dinámicos por zona, tipo de evento y severidad, mapa Folium multicapa (Esri, Sentinel-2 Cloudless, Copernicus CDSE, NASA FIRMS VIIRS, Mapbox, CartoDB, OSM, OpenTopoMap), polígonos de alerta, verificación del pipeline ONNX y exportación CSV/GeoJSON/expediente demostrativo.
 
 Animaciones: pantalla de bienvenida (splash, CSS puro, ~3 s) y portada animada (`app/assets/portada-bosque.mp4`, bucle sin costura, 8 s, generada con HyperFrames).
 
@@ -128,17 +126,10 @@ GeoForest-AI-Huanuco/
    pytest tests/ -q
    ```
 
-4. **Lanzar el panel interactivo (usar Python como módulo, para que `src` quede en `sys.path`):**
+4. **Lanzar el panel interactivo principal (usar Python como módulo, para que `src` quede en `sys.path`):**
 
    ```bash
    python -m streamlit run app/main.py --server.headless true --server.port 8501 --server.fileWatcherType none
-   ```
-
-5. **(Opcional) Lanzar el visor web externo (React + Vite):** la pestaña «🌐 Visor Táctico Web» consume `http://localhost:5174/`. Si está disponible, se embebe; si no, se muestra un aviso.
-
-   ```bash
-   cd /home/emi/Proyectos/GeoForest-AI-Web
-   npm run dev -- --port 5174 --host
    ```
 
 ---
@@ -149,5 +140,4 @@ GeoForest-AI-Huanuco/
 - **El modelo ONNX está sin entrenar.** Su salida es prácticamente constante (~0,465) y el botón «🔧 Verificar pipeline ONNX» mostrará 0,00 ha para que quede evidente que no detecta. Sirve para comprobar que el motor funciona y cuánto tarda, **no** para decidir.
 - **No hay cuantización Int8.** El `.onnx` servido es FP32 (~31,1 MB). No aplicar claims de PTQ ni de throughput ficticio.
 - **Sin datos satelitales reales.** `data/` está vacía; no se descargaron escenas Sentinel-2 ni vectores de Geobosques (requiere autorización). Los recortes del pipeline son sintéticos deterministas.
-- **El visor web es un proyecto aparte** (`GeoForest-AI-Web`) y depende de que ese servidor esté en marcha; sin él, su pestaña degrada a un aviso claro.
 - **Nada de lo aquí publicado es evidencia jurídica.** El hash SHA-256 calculado es una huella de integridad reproducible, no una cadena de custodia acreditada.

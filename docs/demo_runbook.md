@@ -4,7 +4,7 @@
 
 ## Checklist de arranque (10 min antes)
 
-1. **Terminal 1 — panel Streamlit:**
+1. **Terminal — panel principal Streamlit:**
    ```bash
    cd /home/emi/Proyectos/GeoForest-AI-Huanuco
    source .venv/bin/activate
@@ -12,16 +12,9 @@
    ```
    Verificar `http://127.0.0.1:8501` responde.
 
-2. **Terminal 2 — visor web React (opcional pero recomendado):**
-   ```bash
-   cd /home/emi/Proyectos/GeoForest-AI-Web
-   npm run dev -- --port 5174 --host
-   ```
-   Verificar `http://127.0.0.1:5174/` responde. Si no, la pestaña «🌐 Visor Táctico Web» muestra un aviso honesto (no está roto, solo no se inició).
+2. **Navegador:** abrir `http://127.0.0.1:8501` en modo limpio (sin caché problemática). Dejar que termine la animación de la pantalla de bienvenida (~3 s).
 
-3. **Navegador:** abrir `http://127.0.0.1:8501` en modo limpio (sin caché problemática). Dejar que termine la animación de la pantalla de bienvenida (~3 s).
-
-4. Verificar que no haya un servidor Streamlit anterior: `pgrep -af streamlit`.
+3. Verificar que no haya un servidor Streamlit duplicado: `pgrep -af streamlit`.
 
 ## Recorrido propuesto (≈ 10–12 min)
 
@@ -43,23 +36,18 @@
 - **No digas que esto es una detección.** El aviso rojo lo deja claro. Mensaje preparado: «Esto verifica que la cadena recorte→tensor→ONNX→superficie funciona y cuánto tarda. El modelo de referencia se sustituye por uno entrenado cuando haya etiquetas validadas de Geobosques».
 - Menciona la inferencia por ventanas deslizantes y la fusión suave (Gaussiana/lineal/constante) como capacidad del motor, y las 77 pruebas automatizadas (46 GIS, 11 U-Net, 16 inferencia, 4 simulación).
 
-### D. Tab «⏱️ Modo Pitch (Simulador Temporal)»
+### D. Simulador Temporal (Modo Pitch)
 
-- Simulación temporal por semanas, determinista (misma semilla Mulberry32 bit-a-bit con el visor React).
+- Simulación temporal por semanas, determinista (`seed=42`, PRNG Mulberry32).
 - Útil para contar la narrativa: acumulación de alertas, expansión semanal. Recalca que son datos simulados.
 
-### E. Tab «🧠 Benchmark U-Net ONNX (métricas simuladas)»
+### E. Benchmark U-Net ONNX (métricas simuladas)
 
 - Primero lee el **aviso amarillo**: «estas métricas NO están medidas». Los números son una plantilla de referencia.
 - El peso real (31,1 MB FP32) sí es medido. Todo lo demás (IoU 88,4 %, F1 93,8 %, latencia 18,4 ms) es maquetación.
 - Explica el camino hacia métricas reales: etiquetas de Geobosques, entrenamiento validado por un especialista.
 
-### F. Tab «🌐 Visor Táctico Web (React :5174)»
-
-- Si está en marcha, muestra el iframe con el barrido de radar y la telemetría. Resalta que comparte la misma semilla determinista con el panel.
-- Si no arrancó, recuerda la degradación honesta.
-
-### G. Cierre
+### F. Cierre
 
 - Descarga de CSV/GeoJSON y el expediente demostrativo (`.txt` con hash SHA-256 de integridad).
 - Hoja de ruta del proyecto (expander al final): Etapas 1–4.
@@ -71,7 +59,6 @@
 - ❌ No leas las cifras de IoU/F1/latencia como medidas.
 - ❌ No llames «cuantizado (Int8)» al modelo: es FP32, sin PTQ.
 - ❌ No digas «54,3 parches/segundo» ni «cadena de custodia probatoria»: son parches inventados.
-- ❌ No abras la pestaña del visor si el servidor 5174 no responde (el aviso lo maneja solo).
 - ❌ No presentes el expediente FEMA/SERFOR como un informe pericial válido (son datos simulados).
 - ❌ No dejes que un jurado pulse el botón «Verificar pipeline» sin contexto.
 - ❌ No ocultes el «Modo Demostrativo Activo».
@@ -82,18 +69,17 @@
 |---|---|---|
 | Panel no carga / 404 | Servidor no iniciado | Arrancarlo con `python -m streamlit` (no con el script de consola). |
 | `ModuleNotFoundError: No module named 'src'` | Lanzado sin `python -m` | Reiniciar con el comando de la guía. |
-| Pestaña radar vacía | React :5174 apagado | Levantarlo o usarla solo como aviso. |
 | Animación se congela | Ya reproduciéndose una vez por carga | Es por diseño (CSS, una reproducción por carga de página). |
 | Discrepancia de código con la copia commiteada | Otro agente editó después | Revisar `git status` y `git diff`. |
 | Resultado del pipeline `0,00 ha` | Modelo sin entrenar (correcto) | Explicar con el mensaje preparado. |
-<|end|> El panel cambió (edits ajenos) | Trabajo multiagente | Ver `AGENTS.md` y preguntar antes de sobrescribir. |
+| El panel cambió (edits ajenos) | Trabajo multiagente | Ver `AGENTS.md` y preguntar antes de sobrescribir. |
 
 ## Files clave para el jurado
 
-- `app/main.py` (interfaz, 4 pestañas, splash y portada).
+- `app/main.py` (interfaz principal, modos unificado y consola SIG, splash y portada).
 - `src/preprocess.py` (35+ pruebas GIS; este módulo está completo).
 - `src/unet.py` y `src/infer.py` (arquitectura y motor; pruebas).
-- `src/sim/` (simulador determinista compartido con el visor React).
+- `src/sim/` (simulador determinista).
 - `tests/` (77 pruebas automatizadas).
 - `videos/geoforest-portada/` + `app/assets/` (animaciones).
 - `.streamlit/config.toml` (tema).
@@ -101,4 +87,4 @@
 
 ## Al cerrar la exposición
 
-- Comandos de cierre: `Ctrl+C` en ambas terminales. No te preocupes por los cambios, están commiteados.
+- Comando de cierre: `Ctrl+C` en la terminal de Streamlit. No te preocupes por los cambios, están commiteados.

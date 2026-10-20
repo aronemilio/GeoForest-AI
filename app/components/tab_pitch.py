@@ -23,8 +23,7 @@ def render_tab_pitch() -> None:
     )
     st.caption(
         "Evolución semanal multitemporal de alertas de cambio de cobertura y quemas agrícolas "
-        "con motor pseudoaleatorio Mulberry32 determinista (`seed=42`). "
-        "Garantiza paridad matemática exacta con el visor táctico web en React (:5174)."
+        "con motor pseudoaleatorio Mulberry32 determinista (`seed=42`)."
     )
 
     escenario = generar_escenario_simulado(
