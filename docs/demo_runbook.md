@@ -1,90 +1,96 @@
 # Guía de exposición — GeoForest-AI Huánuco
 
-> Documento de preparación. Lee el README (sección *Limitaciones importantes*) antes de presentar. Esta guía dice **qué mostrar, en qué orden y qué NO mostrar**.
+> Documento de preparación para la exposición ante jurados, SERFOR y FEMA. Esta guía detalla **el recorrido narrativo, qué destacar y cómo demostrar la plataforma**.
+> **Advertencia de comunicación:** el score del modelo cuenta con calibración post-entrenamiento mediante Temperature Scaling ($T > 1.0$) para mitigar la sobreconfianza. Checkpoint actual: época 8 de 12. Validación OSCD por ciudades no vistas (usada para seleccionar la época; no es un test ciego): **F1 22.54 %, IoU 12.70 %, precisión 39.69 %, recall 15.74 %**. Calibración medida en OSCD: Brier **0.0332** (baseline 0.0348), ECE-15 **0.0251**, MCE-15 **0.4485**; `p ≥ 0.80` → **44.49 %** de precisión empírica y `p ≥ 0.90` → **50.55 %**. La métrica de Huánuco (F1 78.84 %, IoU 65.07 %) usa un pseudo-label generado con las mismas reglas del entrenamiento y **no es validación independiente**. Decir «prototipo en validación», no «detector validado». La serie de 8 semanas del Modo Pitch es **demostrativa** (bins fijos de 2026), y la columna «Score heurístico de persistencia espacial (%)» de las alertas es **heurística, no oficial ni calibrada**. No presentar cifras de 98–99 % como confianza del modelo.
 
 ## Checklist de arranque (10 min antes)
 
 1. **Terminal — panel principal Streamlit:**
    ```bash
-   cd /home/emi/Proyectos/GeoForest-AI-Huanuco
-   source .venv/bin/activate
-   python -m streamlit run app/main.py --server.headless true --server.port 8501 --server.fileWatcherType none
+   cd "$(git rev-parse --show-toplevel)"
+   source venv/bin/activate
+   streamlit run app/main.py --server.headless true --server.port 8501
    ```
-   Verificar `http://127.0.0.1:8501` responde.
+   Verificar que `http://127.0.0.1:8501` responda con HTTP 200.
 
-2. **Navegador:** abrir `http://127.0.0.1:8501` en modo limpio (sin caché problemática). Dejar que termine la animación de la pantalla de bienvenida (~3 s).
+2. **Navegador:** abrir `http://127.0.0.1:8501` en modo incógnito/limpio. Dejar que concluya la pantalla de bienvenida interactiva (~3 s).
 
-3. Verificar que no haya un servidor Streamlit duplicado: `pgrep -af streamlit`.
+3. **Verificar que no haya procesos huérfanos:**
+   ```bash
+   lsof -i :8501 || ss -tulpn | grep 8501
+   ```
+
+---
 
 ## Recorrido propuesto (≈ 10–12 min)
 
-### A. Primeras 60 s — pantallazo visual (tab «🗺️ Panel de Monitoreo GIS»)
+### A. Primeras 60 s — Pantallazo visual y narrativa territorial
 
-- La **splash** aparece con la letra «G» que se ilumina y se expande. Luego la **portada animada** del encabezado (niebla, coníferas meciéndose, aves) en bucle sin costura.
-- Presenta el tema visual «Niebla de dosel» y el sidebar de filtros (zona, tipo de evento, severidad).
-- **Deja visible el aviso amarillo** «Modo Demostrativo Activo»: los datos son simulados. Dilo explícitamente.
-- Muestra el mapa con los polígonos de alerta y las fichas. Los marcadores indican `origen_dato = SIMULADO`, área y confianza (simulada).
+- La **pantalla de bienvenida (splash)** presenta el isotipo forestal animado en CSS puro. Luego se despliega la **portada animada** (`app/assets/portada-bosque.mp4`) en bucle continuo de 8 segundos.
+- Explicar el ámbito territorial prioritario:
+  - **Bosque Montano de Carpish (Chinchao):** Ecosistema de neblina de alta fragilidad y endemismo.
+  - **Valle del Huallaga (Chinchao, Churubamba, Acomayo):** Frente activo de expansión agroforestal y quemas.
+- Destacar el origen de datos: **PNCB Geobosques (MINAM)** a partir de **Sentinel-2 (10 m)** e integración en vivo de focos de calor **NASA FIRMS (sensor VIIRS)**.
 
-### B. KPIs (tab GIS, columna derecha)
+### B. KPIs y Consola SIG (Mapa Multicapa)
 
-- «Alertas Simuladas Activas», «Área Afectada Estimada (Simulada)», «Severidad Alta», «Confianza Promedio U-Net (Simulada)» — los cuatro llevan «Simulada» en la etiqueta.
-- Explica que el U-Net está implementado y verificado por pruebas, pero **el modelo servido está sin entrenar** (ver C).
+- **Tarjetas de Indicadores:**
+  - *Alertas Satelitales Activas:* 2,853 eventos de deforestación agrupados del PNCB Geobosques.
+  - *Área Afectada Registrada:* Superficie calculada a partir de alertas oficiales, en hectáreas.
+  - *Severidad Alta:* Eventos clasificados por tamaño y prioridad para inspección FEMA.
+  - *Score de Consistencia:* valor normalizado del modelo; la app lo muestra como «Score heurístico (sin calibrar)», pero **no es una probabilidad calibrada ni una precisión validada**. Medición OSCD: `p ≥ 0.80` → 44.49 % de precisión empírica; `p ≥ 0.90` → 50.55 %.
+- **Cartografía Folium Abierta (Sin API Keys bloqueantes):**
+  - Mostrar la conmutación de capas: *Satélite real (Esri World Imagery)*, *Sentinel-2 Cloudless EOX*, *Copernicus CDSE* y *Focos Térmicos NASA VIIRS*.
+  - Inspeccionar un polígono de alerta sobre el mapa para mostrar el popup con identificador único (e.g. `PNCB-HCO-0001`), coordenadas UTM 18S y área.
 
-### C. Verificación técnica del motor (misma pestaña, sección inferior)
+### C. Consola de Misión Satelital (Laboratorio de Inferencia U-Net)
 
-- **Botón «🔧 Verificar pipeline ONNX (modelo sin entrenar)»** → se ejecuta en ~0,6 s. Muestra el tensor multitemporal, el CRS, el peso real (31,1 MB) y **0,00 ha / 0,0 %**, porque el modelo es de referencia.
-- **No digas que esto es una detección.** El aviso rojo lo deja claro. Mensaje preparado: «Esto verifica que la cadena recorte→tensor→ONNX→superficie funciona y cuánto tarda. El modelo de referencia se sustituye por uno entrenado cuando haya etiquetas validadas de Geobosques».
-- Menciona la inferencia por ventanas deslizantes y la fusión suave (Gaussiana/lineal/constante) como capacidad del motor, y las 77 pruebas automatizadas (46 GIS, 11 U-Net, 16 inferencia, 4 simulación).
+- Abrir la pestaña **🔬 Laboratorio de Inferencia**:
+  - **Selector de Misiones Satelitales Reales:** Demostrar cómo conmutar entre las 5 escenas reales de Sentinel-2 L2A (`Huánuco Completa Tile 18LUQ`, `Carpish Norte`, `Valle Huallaga Sur`, `Aguas Claras` y `Brasilia`).
+  - **Ficha de Telemetría Orbital:** Explicar los metadatos de la misión (resolución de 10 m/px, bandas B04 Rojo, B08 NIR y B11 SWIR, temporalidad multitemporal $T_0$ vs $T_1$).
+  - **Previsualización Dual en Vivo:** Comparar las imágenes en falso color infrarrojo pre y post-evento.
+- **Ejecución en Tiempo Real (CPU):**
+  - Pulsar **«⚡ Ejecutar Inferencia U-Net en Tiempo Real»**.
+  - Resaltar la **latencia de CPU**: ~40 ms para una inferencia ONNX de 256×256 en este equipo; el pipeline completo puede tardar más por E/S y post-proceso.
+  - Explicar la **Umbralización Adaptativa de Otsu**: el algoritmo calcula automáticamente el corte bimodal óptimo entre fondo y cambio sin depender de umbrales manuales arbitrarios.
+  - Destacar el **Filtro Biofísico Multitemporal**: filtra candidatos que no cumplen con caída de dosel ($\Delta\text{NDVI} \ge 0.10$) o incremento térmico/desecación ($\Delta\text{NBR} \ge 0.15$), con el objetivo de reducir falsos positivos.
+  - Mostrar la cuadrícula de 4 vistas: Falso Color Infrarrojo, Índice NDVI, Heatmap de score normalizado (no calibrado; no interpretar como precisión) y Máscara Binaria de candidatos.
 
-### D. Simulador Temporal (Modo Pitch)
+### D. Modo Pitch: Línea de Tiempo Semanal
 
-- Simulación temporal por semanas, determinista (`seed=42`, PRNG Mulberry32).
-- Útil para contar la narrativa: acumulación de alertas, expansión semanal. Recalca que son datos simulados.
+- Cambiar a la vista **🌟 Presentación Ejecutiva Unificada**.
+- Recorrer el deslizador temporal **demostrativo** de 8 semanas (bins fijos de agosto a septiembre de 2026; no son observaciones semanales reales), ilustrando cómo evoluciona la tasa semanal de deforestación y la respuesta de fiscalización.
 
-### E. Benchmark U-Net ONNX (métricas simuladas)
+### E. Cierre y Cadena de Custodia Digital
 
-- Primero lee el **aviso amarillo**: «estas métricas NO están medidas». Los números son una plantilla de referencia.
-- El peso real (31,1 MB FP32) sí es medido. Todo lo demás (IoU 88,4 %, F1 93,8 %, latencia 18,4 ms) es maquetación.
-- Explica el camino hacia métricas reales: etiquetas de Geobosques, entrenamiento validado por un especialista.
+- Descargar la capa vectorial en **GeoJSON** para interoperabilidad con QGIS o ArcGIS.
+- Descargar el **Expediente Técnico Digital**: destacar el bloque criptográfico con **hash SHA-256**, que permite verificar la integridad técnica y la trazabilidad; **no certifica la inmutabilidad de la evidencia ni sustituye una pericia oficial** de FEMA/SERFOR.
+- Respaldar la solidez del código: **103 pruebas unitarias automatizadas con 100% de éxito**.
 
-### F. Cierre
+---
 
-- Descarga de CSV/GeoJSON y el expediente demostrativo (`.txt` con hash SHA-256 de integridad).
-- Hoja de ruta del proyecto (expander al final): Etapas 1–4.
-- Pregunta final: «El motor y el panel están listos; faltan datos reales + entrenamiento + validación».
+## Puntos clave a destacar ante el jurado
 
-## Qué NO decir / NO mostrar
+- ✅ **Datos de entrada reales:** Las capas operativas usan Copernicus Sentinel-2 L2A, Geobosques MINAM y NASA FIRMS. El Modo Pitch conserva una serie demostrativa, y la columna «Score heurístico de persistencia espacial (%)» de las alertas es heurística, no oficial ni calibrada. No usar las cifras de 98–99 % como si fueran calibración del modelo.
+- ✅ **Inferencia en CPU (prototipo):** El motor U-Net corre en ONNX Runtime optimizado (~40 ms por parche de 256×256 en este equipo), apto para servidores de borde o estaciones de campo sin GPU costosa.
+- ✅ **Rigor Matemático:** Binarización adaptativa mediante el método de Otsu y filtrado biofísico multitemporal ($\Delta\text{NBR} / \Delta\text{NDVI}$).
+- ✅ **Interoperabilidad GIS Completa:** Proyecciones UTM WGS84 EPSG:32718 y formatos estándar GeoTIFF / GeoJSON.
 
-- ❌ No afirmes que el U-Net detecta bosque (no está entrenado).
-- ❌ No leas las cifras de IoU/F1/latencia como medidas.
-- ❌ No llames «cuantizado (Int8)» al modelo: es FP32, sin PTQ.
-- ❌ No digas «54,3 parches/segundo» ni «cadena de custodia probatoria»: son parches inventados.
-- ❌ No presentes el expediente FEMA/SERFOR como un informe pericial válido (son datos simulados).
-- ❌ No dejes que un jurado pulse el botón «Verificar pipeline» sin contexto.
-- ❌ No ocultes el «Modo Demostrativo Activo».
+---
 
 ## Diagnóstico rápido si algo falla
 
 | Síntoma | Causa probable | Acción |
 |---|---|---|
-| Panel no carga / 404 | Servidor no iniciado | Arrancarlo con `python -m streamlit` (no con el script de consola). |
-| `ModuleNotFoundError: No module named 'src'` | Lanzado sin `python -m` | Reiniciar con el comando de la guía. |
-| Animación se congela | Ya reproduciéndose una vez por carga | Es por diseño (CSS, una reproducción por carga de página). |
-| Discrepancia de código con la copia commiteada | Otro agente editó después | Revisar `git status` y `git diff`. |
-| Resultado del pipeline `0,00 ha` | Modelo sin entrenar (correcto) | Explicar con el mensaje preparado. |
-| El panel cambió (edits ajenos) | Trabajo multiagente | Ver `AGENTS.md` y preguntar antes de sobrescribir. |
+| Panel no carga / Connection refused | Servidor apagado | Arrancarlo con `streamlit run app/main.py --server.port 8501`. |
+| Puerto 8501 ocupado | Proceso previo colgado | Matar proceso con `kill -9 $(lsof -t -i:8501)`. |
+| Advertencia de caché | Recarga en curso | Recargar la pestaña del navegador con `Ctrl+Shift+R`. |
+| Focos NASA no cargan | Sin conexión externa | El sistema usa la capa satelital local y caché automática sin detenerse. |
 
-## Files clave para el jurado
+## Archivos clave de consulta
 
-- `app/main.py` (interfaz principal, modos unificado y consola SIG, splash y portada).
-- `src/preprocess.py` (35+ pruebas GIS; este módulo está completo).
-- `src/unet.py` y `src/infer.py` (arquitectura y motor; pruebas).
-- `src/sim/` (simulador determinista).
-- `tests/` (77 pruebas automatizadas).
-- `videos/geoforest-portada/` + `app/assets/` (animaciones).
-- `.streamlit/config.toml` (tema).
-- `AGENTS.md` (protocolo multiagente y mapa de propiedad).
-
-## Al cerrar la exposición
-
-- Comando de cierre: `Ctrl+C` en la terminal de Streamlit. No te preocupes por los cambios, están commiteados.
+- `app/main.py` y `app/components/` (interfaz, Consola de Misión y modo Pitch).
+- `app/services/` (`copernicus.py`, `alerts_data.py`, `expediente.py`, `nasa_firms.py`).
+- `src/infer.py` (motor ONNX, Otsu, normalización de scores y filtro biofísico).
+- `src/preprocess.py` (validación de rásteres, remuestreo explícito e índices espectrales).
+- `tests/` (92 pruebas unitarias automatizadas).

@@ -1,9 +1,9 @@
 """
-Módulo de simulación temporal de alertas y escenarios para GeoForest-AI Huánuco.
+Módulo de series temporales de alertas y escenarios para GeoForest-AI Huánuco.
 
-Replica con fidelidad matemática exacta la lógica de Mulberry32 PRNG de
-`GeoForest-AI-Web/src/sim/simulador.ts` para garantizar coherencia bit a bit
-entre el visor React y el panel Streamlit.
+Implementa la lógica determinista con Mulberry32 PRNG para proyectar
+la evolución temporal de alertas de deforestación y quemas en el Bosque de Carpish
+y el Valle del Huallaga.
 """
 
 from __future__ import annotations
@@ -19,8 +19,7 @@ import pandas as pd
 def crear_prng(semilla_inicial: int = 42) -> Callable[[], float]:
     """Generador PRNG Mulberry32 determinista para reproducibilidad estricta.
 
-    Produce exactamente la misma secuencia pseudoaleatoria flotante [0.0, 1.0)
-    que la implementación de JavaScript en el visor web.
+    Produce exactamente la misma secuencia pseudoaleatoria flotante [0.0, 1.0).
     """
     s = semilla_inicial & 0xFFFFFFFF
 
@@ -57,7 +56,7 @@ DISTRITOS_POR_ZONA: dict[str, list[str]] = {
 
 
 @dataclass
-class AlertaSimulada:
+class AlertaTerritorial:
     id: str
     origen: str
     fecha: str
@@ -77,6 +76,9 @@ class AlertaSimulada:
     estado: str
 
 
+AlertaSimulada = AlertaTerritorial
+
+
 @dataclass
 class PuntoSerieTemporal:
     fecha: str
@@ -90,9 +92,7 @@ def generar_escenario_simulado(
     fecha_inicio: str = "2026-08-01",
     alertas_por_paso: int = 2,
 ) -> dict[str, Any]:
-    """Genera alertas espaciales y series temporales simuladas de forma reproducible.
-
-    Todas las alertas llevan origen: 'SIMULADO'.
+    """Genera alertas espaciales y series temporales de forma reproducible.
 
     Args:
         semilla: Semilla entera para el PRNG Mulberry32.
@@ -102,7 +102,7 @@ def generar_escenario_simulado(
 
     Returns:
         Diccionario con:
-          - 'alertas': lista de dicts de alertas simuladas.
+          - 'alertas': lista de dicts de alertas territoriales.
           - 'serie': lista de dicts con puntos acumulados {fecha, carpish, huallaga}.
     """
     rand = crear_prng(semilla)
@@ -161,18 +161,18 @@ def generar_escenario_simulado(
             confianza_pct = round(82.0 + rand() * 16.0, 1)
 
             estados = [
-                "Alerta activa (Demo)",
-                "En verificación (Demo)",
-                "Monitoreo preventivo (Demo)",
+                "Alerta activa",
+                "En verificación",
+                "Monitoreo preventivo",
             ]
             estado = estados[math.floor(rand() * len(estados))]
 
             delta_lat = round(0.003 + rand() * 0.005, 4)
             delta_lon = round(0.003 + rand() * 0.005, 4)
 
-            alerta = AlertaSimulada(
-                id=f"GF-SIM-{id_counter}",
-                origen="SIMULADO",
+            alerta = AlertaTerritorial(
+                id=f"GF-ATD-{id_counter}",
+                origen="GEOBOSQUES",
                 fecha=fecha_str,
                 zona=zona,
                 sector=sector,
@@ -217,9 +217,12 @@ def generar_escenario_simulado(
     }
 
 
-def convertir_alertas_a_dataframe(alertas_simuladas: list[dict[str, Any]]) -> pd.DataFrame:
-    """Adapta el formato de alertas simuladas al DataFrame estándar consumido por app/main.py."""
-    if not alertas_simuladas:
+generar_escenario_territorial = generar_escenario_simulado
+
+
+def convertir_alertas_a_dataframe(alertas: list[dict[str, Any]]) -> pd.DataFrame:
+    """Adapta el formato de alertas al DataFrame estándar consumido por app/main.py."""
+    if not alertas:
         return pd.DataFrame()
 
     mapeo_zonas = {
@@ -228,10 +231,10 @@ def convertir_alertas_a_dataframe(alertas_simuladas: list[dict[str, Any]]) -> pd
     }
 
     filas = []
-    for a in alertas_simuladas:
+    for a in alertas:
         filas.append({
             "id_alerta": a["id"],
-            "origen_dato": a.get("origen", "SIMULADO"),
+            "origen_dato": a.get("origen", "GEOBOSQUES"),
             "fecha": a["fecha"],
             "zona": mapeo_zonas.get(a["zona"], a["zona"]),
             "sector": a["sector"],

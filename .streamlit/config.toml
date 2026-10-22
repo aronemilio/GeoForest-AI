@@ -41,9 +41,6 @@ dataframeBorderColor = "#C3D2C0"
 dataframeHeaderBackgroundColor = "#1B422F"
 dataframeHeaderTextColor = "#EAF1E7"
 
-paddingTop = "2rem"
-paddingBottom = "2rem"
-
 # --- Barra lateral: dosel profundo (contraste deliberado con la niebla) ------
 [theme.sidebar]
 backgroundColor = "#12301F"

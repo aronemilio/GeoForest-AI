@@ -148,6 +148,23 @@ __all__ = [
 ]
 
 # ---------------------------------------------------------------------------
+# Utilidad de comparación de CRS
+# ---------------------------------------------------------------------------
+def _crs_equal(a: Any, b: Any) -> bool:
+    """Compara dos CRS de forma robusta ante None o diferencias de clase."""
+    if a is None or b is None:
+        return a is b
+    try:
+        ra = CRS.from_user_input(a)
+        rb = CRS.from_user_input(b)
+    except Exception:
+        return str(a) == str(b)
+    if hasattr(ra, "equals"):
+        return bool(ra.equals(rb))
+    return bool(ra == rb)
+
+
+# ---------------------------------------------------------------------------
 # Constantes: bandas Sentinel-2 relevantes
 # ---------------------------------------------------------------------------
 SENTINEL2_BANDS: tuple[str, ...] = ("B4", "B8", "B11")
@@ -403,7 +420,7 @@ def validate_geotiff(
 
     if expected_crs is not None and profile.crs is not None:
         esperado = CRS.from_user_input(expected_crs)
-        if not profile.crs.equals(esperado):
+        if not _crs_equal(profile.crs, esperado):
             raise CRSMismatchError(
                 f"CRS inesperado en {profile.path}: "
                 f"encontrado={profile.crs.to_string()}, esperado={esperado.to_string()}"
@@ -554,7 +571,9 @@ def _crs_equal(a: Any, b: Any) -> bool:
         rb = CRS.from_user_input(b)
     except Exception:  # noqa: BLE001 - comparación de respaldo por texto
         return str(a) == str(b)
-    return bool(ra.equals(rb))
+    if hasattr(ra, "equals"):
+        return bool(ra.equals(rb))
+    return bool(ra == rb)
 
 
 def _coerce_grid(reference: "GridSpec | RasterProfile | str | Path | None") -> GridSpec | None:
@@ -1190,7 +1209,7 @@ def prepare_reference_vector(
         destino = CRS.from_user_input(target_crs)
         if gdf.crs is None:  # pragma: no cover - ya validado arriba
             raise MissingCRSError("El vector no declara CRS; no puede reproyectarse.")
-        if not gdf.crs.equals(destino):
+        if not _crs_equal(gdf.crs, destino):
             gdf = gdf.to_crs(destino)
 
     validate_reference_vector(gdf, required_columns=required_columns)
@@ -1599,11 +1618,16 @@ def _parse_time_sources(sources: Any) -> dict[str, Any]:
     if isinstance(sources, Mapping):
         res = {}
         for b in ("B4", "B8", "B11"):
-            if b in sources:
-                res[b] = sources[b]
-            elif b.lower() in sources:
-                res[b] = sources[b.lower()]
-            else:
+            aliases = [b, b.lower()]
+            if b in ("B4", "B8"):
+                aliases.extend([f"B0{b[1]}", f"b0{b[1]}"])
+            found = False
+            for alias in aliases:
+                if alias in sources:
+                    res[b] = sources[alias]
+                    found = True
+                    break
+            if not found:
                 raise BandError(f"Falta la banda requerida '{b}' en las fuentes proporcionadas.")
         return res
     if isinstance(sources, (list, tuple)):

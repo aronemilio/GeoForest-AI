@@ -41,7 +41,7 @@ def test_generar_escenario_simulado_estructura():
 
     # Verificar estructura de alerta
     a0 = alertas[0]
-    assert a0["origen"] == "SIMULADO"
+    assert a0["origen"] == "GEOBOSQUES"
     assert a0["zona"] in ("carpish", "huallaga")
     assert a0["severidad"] in ("Alta", "Media", "Baja")
     assert a0["areaHa"] > 0

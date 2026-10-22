@@ -30,10 +30,17 @@ from src.infer import (
     ModelNotFoundError,
     ONNXForestPredictor,
     WindowConfigError,
+    apply_biophysical_filter,
     binarize,
     calculate_affected_area,
+    calibrate_probabilities,
+    calibration_errors,
+    compute_otsu_threshold,
     create_blend_window,
     extract_alerts,
+    fit_temperature,
+    load_temperature,
+    sigmoid_with_temperature,
 )
 from src.preprocess import GridSpec, PreparedBands, RasterSource
 from src.unet import generate_reference_model
@@ -369,3 +376,193 @@ def test_predict_prepared_integration(sample_onnx_model: Path) -> None:
     summary = result.to_dict()
     assert "affected_area_ha" in summary
     assert "total_alerts" in summary
+
+
+# ---------------------------------------------------------------------------
+# Pruebas de Umbral Adaptativo, Calibración y Filtro Biofísico
+# ---------------------------------------------------------------------------
+def test_compute_otsu_threshold_bimodal() -> None:
+    """Verifica que Otsu encuentre el punto de corte óptimo en una distribución bimodal."""
+    # Fondo con media ~0.2, anomalías con media ~0.8
+    rng = np.random.default_rng(42)
+    fondo = rng.normal(loc=0.2, scale=0.05, size=(100, 100))
+    anomalia = rng.normal(loc=0.8, scale=0.05, size=(20, 20))
+    prob_map = fondo.copy()
+    prob_map[10:30, 10:30] = anomalia
+    prob_map = np.clip(prob_map, 0.0, 1.0)
+
+    th = compute_otsu_threshold(prob_map)
+    assert 0.35 <= th <= 0.65
+
+
+def test_compute_otsu_threshold_edge_cases() -> None:
+    """Verifica casos extremos como matrices constantes o con NaNs."""
+    const_map = np.full((50, 50), 0.7, dtype=np.float32)
+    assert compute_otsu_threshold(const_map) == 0.7
+
+    nan_map = np.full((10, 10), np.nan, dtype=np.float32)
+    assert compute_otsu_threshold(nan_map) == 0.5
+
+
+def test_calibrate_probabilities() -> None:
+    """Verifica que la calibración expanda el intervalo [vmin, vmax] a [0.0, 1.0]."""
+    raw_probs = np.linspace(0.55, 0.75, num=100, dtype=np.float32).reshape(10, 10)
+    calibrated = calibrate_probabilities(raw_probs, vmin=0.55, vmax=0.75)
+
+    assert calibrated.shape == (10, 10)
+    assert np.isclose(calibrated.min(), 0.0, atol=1e-3)
+    assert np.isclose(calibrated.max(), 1.0, atol=1e-3)
+
+
+def test_apply_biophysical_filter() -> None:
+    """Verifica que el filtro descarte píxeles que no presentan caída de NBR ni NDVI."""
+    # Máscara binaria con 4 píxeles positivos
+    mask = np.zeros((10, 10), dtype=bool)
+    mask[2:4, 2:4] = True  # 4 píxeles
+
+    # Tensor de 6 bandas (C, H, W):
+    # T0: B4=0.05, B8=0.40, B11=0.15 (Bosque sano)
+    # T1 píxeles (2,2) y (2,3): deforestación real (B4=0.20, B8=0.10, B11=0.30) -> dNDVI y dNBR altos
+    # T1 píxeles (3,2) y (3,3): falso positivo sin cambio (B4=0.05, B8=0.40, B11=0.15)
+    tensor = np.zeros((6, 10, 10), dtype=np.float32)
+    tensor[0, :, :] = 0.05  # B4 T0
+    tensor[1, :, :] = 0.40  # B8 T0
+    tensor[2, :, :] = 0.15  # B11 T0
+
+    tensor[3, :, :] = 0.05  # B4 T1 default
+    tensor[4, :, :] = 0.40  # B8 T1 default
+    tensor[5, :, :] = 0.15  # B11 T1 default
+
+    # Introducir cambio real solo en (2, 2) y (2, 3)
+    tensor[3, 2, 2:4] = 0.20
+    tensor[4, 2, 2:4] = 0.10
+    tensor[5, 2, 2:4] = 0.30
+
+    filtered = apply_biophysical_filter(mask, tensor, min_dnbr=0.15, min_dndvi=0.10)
+    assert np.count_nonzero(filtered) == 2
+    assert filtered[2, 2] is np.True_
+    assert filtered[2, 3] is np.True_
+    assert filtered[3, 2] is np.False_
+    assert filtered[3, 3] is np.False_
+
+
+def test_extract_alerts_with_calibrated_map() -> None:
+    """Verifica que extract_alerts calcule scores cualitativos usando el mapa calibrado."""
+    raw_prob = np.full((20, 20), 0.58, dtype=np.float32)
+    raw_prob[5:10, 5:10] = 0.72  # Valor raw moderado (~72%)
+
+    calib_prob = np.full((20, 20), 0.10, dtype=np.float32)
+    calib_prob[5:10, 5:10] = 0.92  # Valor calibrado alto (>80% -> ALTA)
+
+    alerts = extract_alerts(
+        prob_map=raw_prob,
+        threshold=0.65,
+        calibrated_prob_map=calib_prob,
+    )
+    assert len(alerts) == 1
+    assert alerts[0].confidence_level == ConfidenceLevel.ALTA
+    assert alerts[0].confidence_score >= 0.90
+
+
+def test_catalogo_escenas_satelitales_reales() -> None:
+    """Verifica que el catálogo de escenas satelitales reales cargue tensores válidos."""
+    from app.services.copernicus import CATALOGO_ESCENAS_REALES, cargar_escena_satelital_seleccionada
+
+    assert len(CATALOGO_ESCENAS_REALES) >= 5
+    for clave, meta in CATALOGO_ESCENAS_REALES.items():
+        assert "titulo" in meta
+        assert "satelite" in meta
+        assert "resolucion" in meta
+        tensor, meta_escena, nombre = cargar_escena_satelital_seleccionada(clave)
+        assert tensor.ndim == 3
+        assert tensor.shape[0] == 6  # 6 canales multitemporales (T0: B4,B8,B11; T1: B4,B8,B11)
+        assert tensor.dtype == np.float32
+        assert meta_escena["es_satelital_real"] is True
+        assert -90.0 <= meta_escena["lat"] <= 90.0
+        assert -180.0 <= meta_escena["lon"] <= 180.0
+        assert len(nombre) > 0
+
+
+def test_alertas_reales_geobosques_cargadas() -> None:
+    """Verifica que las alertas de Geobosques MINAM carguen correctamente como datos reales."""
+    from app.services.alerts_data import obtener_alertas_reales_geobosques
+
+    df = obtener_alertas_reales_geobosques()
+    assert not df.empty
+    assert "PNCB-HCO-" in df["id_alerta"].iloc[0]
+    assert (df["origen_dato"] == "PNCB_GEOBOSQUES_MINAM").all()
+    assert (df["area_ha"] > 0).all()
+    assert (df["confianza_pct"] >= 80.0).all()
+    assert "zona" in df.columns
+    assert "sector" in df.columns
+
+
+def test_sigmoid_with_temperature_softens_probabilities() -> None:
+    logits = np.array([-5.0, -1.0, 0.0, 1.0, 5.0], dtype=np.float32)
+    p_raw = sigmoid_with_temperature(logits, temperature=1.0)
+    p_soft = sigmoid_with_temperature(logits, temperature=2.5)
+
+    # 0.0 se mantiene en 0.5
+    assert np.isclose(p_raw[2], 0.5)
+    assert np.isclose(p_soft[2], 0.5)
+
+    # Las probabilidades extremas se suavizan hacia 0.5
+    assert p_soft[0] > p_raw[0]
+    assert p_soft[4] < p_raw[4]
+
+    # El orden relativo (ranking) se preserva estrictamente
+    assert (np.diff(p_raw) > 0).all()
+    assert (np.diff(p_soft) > 0).all()
+
+
+def test_calibration_errors_calculation() -> None:
+    # Caso perfectamente calibrado
+    probs = np.array([0.1, 0.1, 0.9, 0.9])
+    targets = np.array([0, 0, 1, 1])
+    ece, mce = calibration_errors(probs, targets, n_bins=10)
+    assert ece < 0.15
+    assert mce < 0.15
+
+
+def test_fit_temperature_finds_optimal_t() -> None:
+    # Datos sobreconfiados: logits altos (+6 y -6) pero con 20% de errores
+    rng = np.random.default_rng(42)
+    targets = rng.integers(0, 2, size=1000)
+    # Logits que exageran la certeza (+6 / -6) con ruido
+    logits = np.where(targets == 1, 4.0, -4.0) + rng.normal(0, 1.5, size=1000)
+    # Inyectar 15% de ruido/errores
+    flip = rng.random(size=1000) < 0.15
+    targets[flip] = 1 - targets[flip]
+
+    t_opt = fit_temperature(logits, targets, t_min=1.0, t_max=10.0)
+    assert t_opt > 1.2  # Debe haber encontrado T > 1 para suavizar sobreconfianza
+
+    p_raw = sigmoid_with_temperature(logits, temperature=1.0)
+    p_cal = sigmoid_with_temperature(logits, temperature=t_opt)
+    ece_raw, mce_raw = calibration_errors(p_raw, targets)
+    ece_cal, mce_cal = calibration_errors(p_cal, targets)
+    assert ece_cal <= ece_raw
+
+
+def test_predictor_temperature_integration(sample_onnx_model: Path, tmp_path: Path) -> None:
+    # Predictor con T=1.0 vs T=2.5
+    pred_1 = ONNXForestPredictor(sample_onnx_model, temperature=1.0)
+    pred_cal = ONNXForestPredictor(sample_onnx_model, temperature=2.5)
+
+    x = np.random.randn(5, 64, 64).astype(np.float32)
+    p1 = pred_1.predict_proba(x)
+    p2 = pred_cal.predict_proba(x)
+
+    # Probabilidades de pred_cal deben estar más cerca de 0.5
+    dev1 = np.abs(p1 - 0.5)
+    dev2 = np.abs(p2 - 0.5)
+    assert (dev2 <= dev1 + 1e-5).all()
+
+    # Carga desde calibration.json junto al modelo
+    cal_file = tmp_path / "calibration.json"
+    import json
+    cal_file.write_text(json.dumps({"temperature": 3.14}))
+    assert load_temperature(cal_file.parent / "dummy_model.onnx") == 3.14
+
+
+

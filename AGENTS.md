@@ -38,13 +38,14 @@ U-Net, ONNX Runtime y Streamlit.
 
 | Ruta | Responsable | Notas |
 | --- | --- | --- |
-| `app/main.py` | Interfaz (Grupo 1) | Panel Streamlit. Datos actuales marcados como `SIMULADO`. No modificar sin autorización. |
-| `src/preprocess.py` | Preprocesamiento GIS | Validación ráster, bandas S2 (B4/B8/B11), vectores de referencia y máscaras. |
-| `tests/test_preprocess.py` | Preprocesamiento GIS | Pruebas con datos sintéticos. |
-| `src/unet.py` | Modelado | Arquitectura U-Net. |
-| `src/infer.py` | Inferencia | Motor ONNX Runtime. |
+| `app/main.py`, `app/components/**` | Interfaz (Frontend) | Panel Streamlit modular (modo Pitch y Consola SIG). Las vistas operativas usan datos reales PNCB Geobosques y Sentinel-2; el Modo Pitch es una serie demostrativa. |
+| `app/services/**` | Servicios & Datos | Carga de ATD Geobosques, Copernicus CDSE, NASA FIRMS y expedientes SHA-256. |
+| `src/preprocess.py` | Preprocesamiento GIS | Validación ráster, bandas S2 (B04/B08/B11), vectores de referencia y máscaras. |
+| `tests/test_preprocess.py` | Preprocesamiento GIS | Pruebas con datos sintéticos y rásteres reales. |
+| `src/unet.py` | Modelado | Arquitectura U-Net y exportador ONNX. |
+| `src/infer.py` | Inferencia | Motor ONNX Runtime, umbralización Otsu, normalización de scores y filtro biofísico. |
 | `requirements.txt`, `README.md` | Coordinación | Cambiar solo con autorización y anunciándolo para no pisar a otros. |
-| `docs/` | Documentación | Documentación técnica. |
+| `docs/` | Documentación | Documentación técnica y runbook de exposición. |
 
 ## Subagentes por rol (ownership impuesto por permisos)
 
@@ -61,7 +62,7 @@ de su rol; así el ownership queda garantizado por permisos y no solo por instru
 ## Entorno y comandos
 
 ```bash
-source .venv/bin/activate                 # entorno virtual del proyecto
+source venv/bin/activate                  # entorno virtual del proyecto
 python -m pytest tests/ -v                # pruebas
 streamlit run app/main.py                 # interfaz
 ```
@@ -70,7 +71,16 @@ streamlit run app/main.py                 # interfaz
 - No descargar imágenes satelitales ni datos de referencia sin autorización.
 - No inventar etiquetas: toda máscara requiere una `LabelRule` **explícita**; un
   cambio de cobertura forestal **no** implica tala ilegal.
-- No presentar datos simulados como detecciones reales.
+- Trabajar rigurosamente con datos y detecciones reales.
+- No rellenar áreas, confianzas ni métricas con valores ficticios cuando el
+  modelo no produce detecciones: mostrar `0` o «sin detecciones».
+- La salida del modelo no es una confianza calibrada; etiquetarla
+  como «probabilidad media (sin calibrar)».
+- No llamar «calibrada» a una mezcla de percentiles/máximos, a `confianza_pct`
+  ni a una fórmula basada en número de puntos. Solo Brier/ECE/reliability
+  medidos sobre una referencia independiente pueden respaldar esa etiqueta.
+- Distinguir **imagen real** de **detección**: una escena Copernicus real sigue
+  siendo solo entrada si el modelo no está validado o no produce detecciones.
 - Toda reproyección o remuestreo debe ser **explícita** y quedar documentada
   (continuo vs. categórico).
 

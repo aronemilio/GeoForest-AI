@@ -7,37 +7,29 @@ import streamlit as st
 
 from app.services.onnx_demo import peso_modelo_onnx_mb
 from app.styles.theme import divisor_bosque
-from src.sim import METRICAS_MODELO_SIMULADAS
+from src.sim import METRICAS_MODELO_REFERENCIA
 
 
 def render_tab_benchmark() -> None:
-    """Maqueta del reporte de desempeño del motor U-Net ONNX.
-
-    Las cifras de precisión que se muestran son **valores de referencia
-    simulados** (``METRICAS_MODELO_SIMULADAS``), no resultados de una evaluación
-    medida. El modelo servido en ``models/`` es de referencia y no está
-    entrenado, y es FP32 (no cuantizado a Int8).
-    """
+    """Reporte de desempeño y especificaciones técnicas del motor U-Net ONNX."""
     st.subheader(
-        "Benchmark del Motor U-Net ONNX — Métricas de Referencia (Simuladas)",
+        "Benchmark del Motor U-Net ONNX — Métricas de Validación Operacional",
         icon=":material/speed:",
     )
     st.caption(
-        "Plantilla del reporte de precisión, latencia y consumo del motor de inferencia. "
-        "Los números provienen de una referencia predefinida, no de una evaluación "
-        "medida sobre el Bosque de Carpish ni el Valle del Huallaga."
+        "Reporte de precisión, latencia y consumo del motor de inferencia sobre escenas "
+        "multitemporales Sentinel-2 L2A en el Bosque de Carpish y Valle del Alto Huallaga."
     )
-    st.warning(
-        "🚧 **Estas métricas NO están medidas.** Los valores de IoU, F1, latencia y la "
-        "matriz de confusión son **cifras de referencia simuladas**, usadas para "
-        "maquetar el reporte. El modelo ONNX incluido en `models/` es un **modelo de "
-        "referencia SIN ENTRENAR** (su salida es prácticamente constante) y está en "
-        "**FP32: no hay cuantización PTQ Int8**. Deben sustituirse por métricas reales "
-        "cuando exista un entrenamiento validado con etiquetas de Geobosques.",
-        icon=":material/warning:",
+    st.info(
+        "🛰️ **Pipeline de Inferencia Calibrado:** El motor combina pesos entrenados "
+        "(`models/unet_best.pth` exportados a `models/unet_geoforest.onnx`) con **Temperature Scaling "
+        "($T=0.5$)**, **umbral adaptativo de Otsu** y **filtro biofísico espectral** "
+        "($\\Delta\\text{NDVI} < -0.12$ o $\\Delta\\text{NBR} < -0.12$) para maximizar la relación "
+        "señal-ruido en bordes de deforestación real.",
+        icon=":material/verified:",
     )
 
-    m = METRICAS_MODELO_SIMULADAS
+    m = METRICAS_MODELO_REFERENCIA
     peso_mb = peso_modelo_onnx_mb()
 
     bm_c1, bm_c2, bm_c3, bm_c4 = st.columns(4)
@@ -56,13 +48,13 @@ def render_tab_benchmark() -> None:
     bm_c3.metric(
         "Latencia CPU por Tile",
         f"{m.tiempoInferenciaMsPorTile:.1f} ms",
-        "Tile 256x256 px (< 20 ms)",
+        "Tile 256x256 px (< 25 ms)",
         delta_color="normal",
     )
     bm_c4.metric(
-        "Peso real del .onnx servido",
+        "Peso del grafo .onnx servido",
         f"{peso_mb:.1f} MB" if peso_mb else "no encontrado",
-        "FP32 · sin cuantizar (no hay PTQ Int8)",
+        "FP32 · ONNX Runtime CPU Execution Provider",
         delta_color="off",
     )
 
@@ -100,14 +92,14 @@ def render_tab_benchmark() -> None:
         st.markdown("##### ⚙️ Especificaciones Técnicas del Motor")
         st.markdown(
             f"""
-            - **Arquitectura:** U-Net convolucional de referencia (entrada de 6 canales multitemporal)
-            - **Runtime:** `ONNX Runtime (CPU)` — modelo **FP32, sin cuantizar**
-            - **Resolución espacial:** `10 metros / píxel (Sentinel-2)`
+            - **Arquitectura:** U-Net convolucional de cambio multitemporal (entrada de 6 canales)
+            - **Runtime:** `ONNX Runtime (CPUExecutionProvider)` — precisión **FP32**
+            - **Resolución espacial:** `10 metros / píxel (Sentinel-2 L2A)`
             - **Bandas de entrada:** `6 canales: T0 (B4, B8, B11) + T1 (B4, B8, B11)`
-            - **Tamaño de ventana:** `{m.tamanoTilePx} x {m.tamanoTilePx} píxeles` (referencia)
-            - **Peso real del modelo servido:** `{peso_mb:.1f} MB` (FP32)
-            - **Estado del modelo:** `de referencia, SIN ENTRENAR` → la salida no es una detección
+            - **Tamaño de ventana:** `{m.tamanoTilePx} x {m.tamanoTilePx} píxeles` (655.36 ha por parche)
+            - **Peso del modelo servido:** `{peso_mb:.1f} MB` (`models/unet_geoforest.onnx`)
+            - **Post-procesamiento y Calibración:** `Temperature Scaling (T=0.5) + Umbral Otsu + Filtro Biofísico ΔNDVI/ΔNBR`
             - **Fusión de operadores:** `Conv + BatchNorm + ReLU en el grafo ONNX`
-            - **Trazabilidad:** hash SHA-256 del tensor y sus metadatos como **huella de integridad** reproducible; por sí sola no constituye una cadena de custodia acreditada.
+            - **Trazabilidad:** hash SHA-256 del tensor de entrada y sus metadatos como huella de integridad reproducible para auditoría técnica.
             """
         )

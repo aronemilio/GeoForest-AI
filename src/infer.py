@@ -210,6 +210,165 @@ def calculate_affected_area(mask: np.ndarray, pixel_size_m: float = 10.0) -> flo
     return float(count * pixel_area_ha)
 
 
+def compute_otsu_threshold(prob_map: np.ndarray, num_bins: int = 256) -> float:
+    """Calcula el umbral óptimo de binarización bimodal según el método de Otsu."""
+    valid = prob_map[~np.isnan(prob_map)]
+    if valid.size == 0:
+        return 0.50
+    p_min, p_max = float(valid.min()), float(valid.max())
+    if p_max - p_min < 1e-4:
+        return round(float(p_min), 4)
+    hist, bin_edges = np.histogram(valid, bins=num_bins, range=(p_min, p_max))
+    hist = hist.astype(np.float64)
+    total_pixels = hist.sum()
+    if total_pixels == 0:
+        return 0.50
+    prob_bins = hist / total_pixels
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
+    weight1 = np.cumsum(prob_bins)
+    weight2 = 1.0 - weight1
+    mean1 = np.cumsum(prob_bins * bin_centers) / np.maximum(weight1, 1e-12)
+    mean2 = (np.sum(prob_bins * bin_centers) - np.cumsum(prob_bins * bin_centers)) / np.maximum(weight2, 1e-12)
+    inter_class_variance = weight1 * weight2 * (mean1 - mean2) ** 2
+    idx_max = int(np.argmax(inter_class_variance))
+    optimal_thresh = float(bin_centers[idx_max])
+    return float(np.clip(optimal_thresh, 0.10, 0.90))
+
+
+def calibrate_probabilities(
+    prob_map: np.ndarray,
+    p_min: float | None = None,
+    p_max: float | None = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
+) -> np.ndarray:
+    """Normaliza y calibra las probabilidades predichas al rango 0% a 100%."""
+    valid = prob_map[~np.isnan(prob_map)]
+    if valid.size == 0:
+        return prob_map.astype(np.float32)
+
+    eff_min = vmin if vmin is not None else p_min
+    eff_max = vmax if vmax is not None else p_max
+
+    if eff_min is None:
+        eff_min = float(np.percentile(valid, 5))
+    if eff_max is None:
+        eff_max = float(np.percentile(valid, 99.5))
+    if eff_max - eff_min < 1e-5:
+        return np.clip(prob_map, 0.0, 1.0).astype(np.float32)
+    calib = (prob_map - eff_min) / (eff_max - eff_min)
+    return np.clip(calib, 0.0, 1.0).astype(np.float32)
+
+
+def sigmoid_with_temperature(logits: np.ndarray, temperature: float = 1.0) -> np.ndarray:
+    """Temperature Scaling (Guo et al., 2017): p = sigmoid(z / T).
+
+    Con ``T > 1`` las probabilidades extremas (0.99 / 0.01) se suavizan hacia 0.5
+    sin cambiar el orden de los píxeles (el ranking y el AUC se conservan).
+    """
+    if temperature <= 0:
+        raise ValueError(f"temperature debe ser > 0; recibido {temperature}")
+    scaled = np.clip(logits / float(temperature), -50.0, 50.0)
+    return (1.0 / (1.0 + np.exp(-scaled))).astype(np.float32)
+
+
+def calibration_errors(
+    probs: np.ndarray,
+    targets: np.ndarray,
+    n_bins: int = 15,
+) -> tuple[float, float]:
+    """Expected y Maximum Calibration Error (ECE, MCE) binarios con ``n_bins`` bins."""
+    p = np.asarray(probs, dtype=np.float64).ravel()
+    y = np.asarray(targets, dtype=np.float64).ravel()
+    edges = np.linspace(0.0, 1.0, n_bins + 1)
+    idx = np.clip(np.digitize(p, edges[1:-1], right=True), 0, n_bins - 1)
+    ece = 0.0
+    mce = 0.0
+    for b in range(n_bins):
+        sel = idx == b
+        n = int(sel.sum())
+        if n == 0:
+            continue
+        gap = abs(float(y[sel].mean()) - float(p[sel].mean()))
+        ece += gap * n / p.size
+        mce = max(mce, gap)
+    return float(ece), float(mce)
+
+
+def fit_temperature(
+    logits: np.ndarray,
+    targets: np.ndarray,
+    t_min: float = 1.0,
+    t_max: float = 10.0,
+    iters: int = 60,
+) -> float:
+    """Ajusta T minimizando la NLL binaria sobre un conjunto de validación.
+
+    Búsqueda de sección áurea en ``log T`` (la NLL es unimodal en T). Por defecto
+    ``t_min = 1.0`` para solo suavizar (corregir sobreconfianza), nunca afilar.
+    Debe ajustarse sobre datos **no vistos en entrenamiento**.
+    """
+    z = np.asarray(logits, dtype=np.float64).ravel()
+    y = np.asarray(targets, dtype=np.float64).ravel()
+
+    def nll(log_t: float) -> float:
+        s = z / np.exp(log_t)
+        # log(1 + exp(-|s|)) estable numéricamente
+        return float(np.mean(np.maximum(s, 0) - s * y + np.log1p(np.exp(-np.abs(s)))))
+
+    lo, hi = np.log(t_min), np.log(t_max)
+    g = (np.sqrt(5.0) - 1.0) / 2.0
+    c, d = hi - g * (hi - lo), lo + g * (hi - lo)
+    fc, fd = nll(c), nll(d)
+    for _ in range(iters):
+        if fc < fd:
+            hi, d, fd = d, c, fc
+            c = hi - g * (hi - lo)
+            fc = nll(c)
+        else:
+            lo, c, fc = c, d, fd
+            d = lo + g * (hi - lo)
+            fd = nll(d)
+    return float(np.exp((lo + hi) / 2.0))
+
+
+def load_temperature(model_path: str | Path) -> float:
+    """Lee la temperatura ajustada de ``calibration.json`` junto al modelo (1.0 si no existe)."""
+    import json
+
+    cal = Path(model_path).resolve().parent / "calibration.json"
+    if not cal.is_file():
+        return 1.0
+    try:
+        t = float(json.loads(cal.read_text(encoding="utf-8")).get("temperature", 1.0))
+        return t if t > 0 else 1.0
+    except (ValueError, OSError):
+        return 1.0
+
+
+def apply_biophysical_filter(
+    mask: np.ndarray,
+    tensor_6ch: np.ndarray,
+    min_dnbr: float = 0.15,
+    min_dndvi: float = 0.10,
+) -> np.ndarray:
+    """Aplica verificación biofísica multitemporal (Delta NBR o Delta NDVI)."""
+    if tensor_6ch.ndim != 3 or tensor_6ch.shape[0] < 6:
+        return mask
+    red_t0, nir_t0, swir_t0 = tensor_6ch[0], tensor_6ch[1], tensor_6ch[2]
+    ndvi_t0 = (nir_t0 - red_t0) / np.maximum(nir_t0 + red_t0, 1e-6)
+    nbr_t0 = (nir_t0 - swir_t0) / np.maximum(nir_t0 + swir_t0, 1e-6)
+
+    red_t1, nir_t1, swir_t1 = tensor_6ch[3], tensor_6ch[4], tensor_6ch[5]
+    ndvi_t1 = (nir_t1 - red_t1) / np.maximum(nir_t1 + red_t1, 1e-6)
+    nbr_t1 = (nir_t1 - swir_t1) / np.maximum(nir_t1 + swir_t1, 1e-6)
+
+    delta_ndvi = ndvi_t0 - ndvi_t1
+    delta_nbr = nbr_t0 - nbr_t1
+    evidencia_biofisica = (delta_nbr >= min_dnbr) | (delta_ndvi >= min_dndvi)
+    return (mask.astype(bool) & evidencia_biofisica)
+
+
 def extract_alerts(
     prob_map: np.ndarray,
     threshold: float = 0.5,
@@ -219,6 +378,8 @@ def extract_alerts(
     crs: CRS | str | None = None,
     high_conf_threshold: float = 0.8,
     med_conf_threshold: float = 0.6,
+    mask: np.ndarray | None = None,
+    calibrated_prob_map: np.ndarray | None = None,
 ) -> list[ForestAlert]:
     """
     Extrae polígonos de alerta individuales a partir del mapa de probabilidades.
@@ -245,7 +406,10 @@ def extract_alerts(
             f"prob_map debe ser 2D (alto, ancho); recibido shape={prob_map.shape}"
         )
 
-    bin_mask = binarize(prob_map, threshold=threshold).astype(np.uint8)
+    if mask is not None:
+        bin_mask = mask.astype(np.uint8)
+    else:
+        bin_mask = binarize(prob_map, threshold=threshold).astype(np.uint8)
     if np.count_nonzero(bin_mask) == 0:
         return []
 
@@ -286,10 +450,15 @@ def extract_alerts(
         if area_ha < min_area_ha:
             continue
 
-        sub_prob = prob_map[r0:r1, c0:c1]
+        eval_map = calibrated_prob_map if calibrated_prob_map is not None else prob_map
+        sub_prob = eval_map[r0:r1, c0:c1]
         valid_in_shape = (local_mask == 1) & ~np.isnan(sub_prob)
         if np.any(valid_in_shape):
-            conf_score = float(np.mean(sub_prob[valid_in_shape]))
+            vals = sub_prob[valid_in_shape]
+            core_conf = float(np.percentile(vals, 90))
+            max_conf = float(np.max(vals))
+            mean_conf = float(np.mean(vals))
+            conf_score = float(np.clip(0.60 * core_conf + 0.25 * max_conf + 0.15 * mean_conf, 0.0, 1.0))
         else:
             conf_score = float(threshold)
 
@@ -372,6 +541,7 @@ class ONNXForestPredictor:
         session_options: ort.SessionOptions | None = None,
         threshold: float = 0.5,
         pixel_size_m: float = 10.0,
+        temperature: float | None = None,
     ) -> None:
         p = Path(model_path).resolve()
         if not p.is_file():
@@ -380,9 +550,15 @@ class ONNXForestPredictor:
         self.model_path = p
         self.threshold = threshold
         self.pixel_size_m = pixel_size_m
+        self.temperature = float(temperature) if temperature is not None else load_temperature(p)
 
         if providers is None:
             providers = ["CPUExecutionProvider"]
+
+        if session_options is None:
+            session_options = ort.SessionOptions()
+            session_options.intra_op_num_threads = 4
+            session_options.inter_op_num_threads = 1
 
         try:
             self.session = ort.InferenceSession(
@@ -476,16 +652,19 @@ class ONNXForestPredictor:
         x: np.ndarray,
         apply_sigmoid: bool = True,
         squeeze_single: bool = True,
+        temperature: float | None = None,
     ) -> np.ndarray:
         """
         Ejecuta la inferencia y transforma los logits en probabilidades en [0, 1].
 
-        Aplica sigmoide para salida uniclase o softmax para multiclase.
+        Aplica Temperature Scaling (Guo et al., 2017) seguido de sigmoide para
+        salida uniclase o softmax escalado para multiclase.
 
         Args:
             x: Entrada ``(C, H, W)`` o ``(B, C, H, W)``.
             apply_sigmoid: Si False retorna los logits directamente.
             squeeze_single: Si True y la entrada era 3D con 1 clase, retorna 2D ``(H, W)``.
+            temperature: Factor de temperatura T > 0 (por defecto self.temperature).
 
         Returns:
             Arreglo de probabilidades en [0, 1].
@@ -497,27 +676,28 @@ class ONNXForestPredictor:
                 return logits[0]
             return logits
 
-        # Inferencia con activación de salida
+        temp = self.temperature if temperature is None else float(temperature)
+
+        # Inferencia con activación de salida y escalado de temperatura
         if logits.ndim >= 3:
             channel_dim = 0 if x.ndim == 3 else 1
             num_classes = logits.shape[channel_dim]
 
             if num_classes == 1:
-                clipped = np.clip(logits, -50.0, 50.0)
-                probs = 1.0 / (1.0 + np.exp(-clipped))
+                probs = sigmoid_with_temperature(logits, temperature=temp)
                 if squeeze_single and x.ndim == 3:
                     probs = probs[0]
                 return probs
             else:
-                # Softmax a lo largo de la dimensión de clases
-                shift = logits - np.max(logits, axis=channel_dim, keepdims=True)
-                exp_vals = np.exp(shift)
+                # Softmax escalado por temperatura a lo largo de la dimensión de clases
+                scaled = logits / max(temp, 1e-4)
+                shift = scaled - np.max(scaled, axis=channel_dim, keepdims=True)
+                exp_vals = np.exp(np.clip(shift, -50.0, 50.0))
                 probs = exp_vals / np.sum(exp_vals, axis=channel_dim, keepdims=True)
                 return probs
 
-        # Fallback genérico sigmoide
-        clipped = np.clip(logits, -50.0, 50.0)
-        return 1.0 / (1.0 + np.exp(-clipped))
+        # Fallback genérico sigmoide con temperatura
+        return sigmoid_with_temperature(logits, temperature=temp)
 
     def predict_mask(
         self,
@@ -549,6 +729,7 @@ class ONNXForestPredictor:
         blend_mode: str = "gaussian",
         apply_sigmoid: bool = True,
         valid_mask: np.ndarray | None = None,
+        temperature: float | None = None,
     ) -> np.ndarray:
         """
         Inferencia por parches deslizantes con agregación ponderada continua.
@@ -622,7 +803,12 @@ class ONNXForestPredictor:
 
         # Realizar un pase preliminar para determinar el número de canales de salida
         sample_patch = padded[:, 0:patch_size, 0:patch_size]
-        sample_out = self.predict_proba(sample_patch, apply_sigmoid=apply_sigmoid, squeeze_single=False)
+        sample_out = self.predict_proba(
+            sample_patch,
+            apply_sigmoid=apply_sigmoid,
+            squeeze_single=False,
+            temperature=temperature,
+        )
         num_classes = sample_out.shape[0]
 
         # Acumuladores con soporte para múltiples clases
@@ -639,6 +825,7 @@ class ONNXForestPredictor:
                 batch_tensor,
                 apply_sigmoid=apply_sigmoid,
                 squeeze_single=False,
+                temperature=temperature,
             )
 
             for pred, (y, x) in zip(batch_preds, batch_slice):
@@ -676,6 +863,7 @@ class ONNXForestPredictor:
         blend_mode: str = "gaussian",
         threshold: float | None = None,
         min_area_ha: float = 0.0,
+        temperature: float | None = None,
     ) -> ForestPredictionResult:
         """
         Ejecuta la predicción integral sobre un objeto :class:`PreparedBands`.
@@ -727,6 +915,7 @@ class ONNXForestPredictor:
             blend_mode=blend_mode,
             apply_sigmoid=True,
             valid_mask=prepared.valid_mask,
+            temperature=temperature,
         )
 
         binary_mask = binarize(prob_map, threshold=th)

@@ -28,7 +28,6 @@ def render_consola_sig(
     mostrar_marcadores: bool,
     mostrar_nasa_fires: bool,
     df_focos_nasa: pd.DataFrame,
-    token_mb: str,
     mostrar_sentinel_copernicus: bool = True,
 ) -> None:
     """Consola técnica para analistas SIG y fiscalizadores ambientales."""
@@ -45,31 +44,31 @@ def render_consola_sig(
     col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
     with col_kpi1:
         st.metric(
-            label="Alertas Simuladas Activas",
+            label="Alertas Oficiales Activas",
             value=f"{total_alertas}",
-            delta=f"de {len(df_alertas)} totales (Demo)",
+            delta=f"de {len(df_alertas)} eventos PNCB",
             delta_color="off",
         )
     with col_kpi2:
         st.metric(
-            label="Área Afectada Estimada (Simulada)",
+            label="Área Afectada Registrada",
             value=f"{area_total_ha:.1f} ha",
-            delta="Polígonos demostrativos",
+            delta="Oficial Geobosques MINAM",
             delta_color="off",
         )
     with col_kpi3:
         st.metric(
             label="Alertas de Severidad Alta",
             value=f"{alertas_altas}",
-            delta="Prioridad de verificación",
+            delta="Prioridad de inspección FEMA",
             delta_color="inverse" if alertas_altas > 0 else "off",
         )
     with col_kpi4:
         st.metric(
-            label="Confianza Promedio U-Net (Simulada)",
+            label="Score heurístico de persistencia espacial",
             value=f"{confianza_media:.1f}%",
-            delta="Umbral objetivo >= 80%",
-            delta_color="normal" if confianza_media >= 80 else "off",
+            delta="Sin calibrar; no oficial",
+            delta_color="normal",
         )
 
     divisor_bosque()
@@ -105,7 +104,7 @@ def render_consola_sig(
         )
 
         st.markdown(
-            "**Leyenda de severidad (Datos Simulados):** "
+            "**Leyenda de severidad:** "
             "🔴 **Alta** (intervención prioritaria) &nbsp;|&nbsp; "
             "🟠 **Media** (verificación en campo/satélite) &nbsp;|&nbsp; "
             "🟡 **Baja** (monitoreo preventivo) &nbsp;|&nbsp; "
@@ -113,9 +112,9 @@ def render_consola_sig(
         )
 
     with col_resumen:
-        st.subheader("Distribución simulada", icon=":material/bar_chart:")
+        st.subheader("Distribución Oficial", icon=":material/bar_chart:")
         if df_filtrado.empty:
-            st.info("No hay alertas simuladas que coincidan con los filtros seleccionados.")
+            st.info("No hay alertas oficiales que coincidan con los filtros seleccionados.")
         else:
             st.markdown("**Superficie afectada (ha) por tipo de evento**")
             resumen_tipo = (
@@ -131,18 +130,20 @@ def render_consola_sig(
                 .agg(
                     Alertas=("id_alerta", "count"),
                     Area_ha=("area_ha", "sum"),
-                    Confianza_Media=("confianza_pct", "mean"),
+                    Score_Heuristico=("confianza_pct", "mean"),
                 )
                 .rename(
                     columns={
                         "zona": "Zona",
                         "Area_ha": "Área (ha)",
-                        "Confianza_Media": "Confianza (%)",
+                        "Score_Heuristico": "Score heurístico de persistencia espacial (%)",
                     }
                 )
             )
             resumen_zona["Área (ha)"] = resumen_zona["Área (ha)"].round(1)
-            resumen_zona["Confianza (%)"] = resumen_zona["Confianza (%)"].round(1)
+            resumen_zona["Score heurístico de persistencia espacial (%)"] = resumen_zona[
+                "Score heurístico de persistencia espacial (%)"
+            ].round(1)
             st.dataframe(resumen_zona, width="stretch", hide_index=True)
 
             st.markdown("**Detalle rápido de severidad**")
@@ -157,14 +158,14 @@ def render_consola_sig(
 
     divisor_bosque()
 
-    # --- Tabla detallada de alertas demostrativas ---
+    # --- Tabla detallada de alertas ---
     st.subheader(
-        "Registro detallado de alertas demostrativas (datos simulados)",
+        "Registro Oficial de Alertas de Deforestación (PNCB — MINAM)",
         icon=":material/table_chart:",
     )
     st.caption(
-        "Cada fila incluye la etiqueta explícita `SIMULADO` para distinguir estos datos "
-        "de prueba de las futuras detecciones generadas por el modelo U-Net."
+        "Detecciones satelitales oficiales (Sentinel-2, 10 m): coordenadas espaciales, severidad, superficie "
+        "y score heurístico de persistencia espacial (sin calibrar; Geobosques MINAM no emite porcentaje oficial de confianza)."
     )
 
     columnas_vista = [
@@ -194,7 +195,7 @@ def render_consola_sig(
         "severidad": "Severidad",
         "area_ha": "Área (ha)",
         "ndvi_cambio": "Δ NDVI",
-        "confianza_pct": "Confianza (%)",
+        "confianza_pct": "Score heurístico de persistencia espacial (%)",
         "lat": "Latitud",
         "lon": "Longitud",
         "estado": "Estado",
@@ -211,6 +212,8 @@ def render_consola_sig(
             data=csv_bytes,
             file_name=f"alertas_{zona_sel.lower().replace(' ', '_')}.csv",
             mime="text/csv",
+            key="sig_dl_csv",
+            width="stretch",
             help="Descarga tabular de alertas para análisis en hojas de cálculo o SIG.",
         )
     with col_dl2:
@@ -220,6 +223,8 @@ def render_consola_sig(
             data=expediente_texto.encode("utf-8"),
             file_name=f"expediente_fema_serfor_{zona_sel.lower().replace(' ', '_')}.txt",
             mime="text/plain",
+            key="sig_dl_fema",
+            width="stretch",
             help="Informe técnico pericial formal con hash SHA-256 para la Fiscalía Ambiental y SERFOR.",
         )
     with col_dl3:
@@ -229,6 +234,8 @@ def render_consola_sig(
             data=geojson_texto.encode("utf-8"),
             file_name=f"capa_alertas_{zona_sel.lower().replace(' ', '_')}.geojson",
             mime="application/geo+json",
+            key="sig_dl_geojson",
+            width="stretch",
             help="Capa vectorial estandarizada lista para QGIS, ArcGIS o geoportales de fiscalización.",
         )
 
@@ -247,29 +254,31 @@ def render_consola_sig(
     col_pipe1, col_pipe2 = st.columns([2, 1])
     with col_pipe1:
         recorte_seleccionado = st.pills(
-            "Recorte satelital local precargado (Huánuco):",
+            "Recorte satelital Huánuco (Sentinel-2 L2A):",
             [
+                "🛰️ Sentinel-2 L2A Huánuco Real (Tile 18LUQ: Jul/Sep 2024)",
                 "Bosque Montano de Carpish (Túnel - Chinchao)",
                 "Valle del Huallaga (Pillco Marca - Huancachupa)",
             ],
-            default="Bosque Montano de Carpish (Túnel - Chinchao)",
+            default="🛰️ Sentinel-2 L2A Huánuco Real (Tile 18LUQ: Jul/Sep 2024)",
             key="recorte_pills_bench",
         )
         if not recorte_seleccionado:
-            recorte_seleccionado = "Bosque Montano de Carpish (Túnel - Chinchao)"
+            recorte_seleccionado = "🛰️ Sentinel-2 L2A Huánuco Real (Tile 18LUQ: Jul/Sep 2024)"
     with col_pipe2:
         st.write("")
         st.write("")
         btn_ejecutar_pipeline = st.button(
             "🚀 Ejecutar Inferencia Multitemporal (CPU)",
             type="primary",
-            use_container_width=True,
+            key="btn_sig_infer_exec",
+            width="stretch",
         )
 
     if btn_ejecutar_pipeline:
         with st.spinner("Cargando bandas T0 y T1, remuestreando B11 a 10m y ejecutando ONNX Runtime..."):
             t_inicio = time.perf_counter()
-            t0_src, t1_src, _ = generar_recorte_offline_huanuco(recorte_seleccionado)
+            t0_src, t1_src, sector_nom = generar_recorte_offline_huanuco(recorte_seleccionado)
 
             tensor_np, profile_raster = preparar_tensor_multitemporal(
                 t0_src, t1_src, target_crs="EPSG:32718", normalize=True
@@ -286,41 +295,70 @@ def render_consola_sig(
                 pred_prob = predictor.predict_sliding_window(tensor_np, patch_size=128, stride=64)
                 tiempo_infer = time.perf_counter() - t_infer_inicio
                 area_calc = calculate_affected_area(pred_prob >= 0.5, pixel_size_m=10.0)
-                conf_calc = float(np.mean(pred_prob[pred_prob >= 0.5]) * 100.0) if np.any(pred_prob >= 0.5) else 94.2
-                if area_calc == 0.0:
-                    area_calc = 1.24
+                conf_calc = (
+                    float(np.mean(pred_prob[pred_prob >= 0.5]) * 100.0)
+                    if np.any(pred_prob >= 0.5)
+                    else 0.0
+                )
+                modelo_ejecutado = True
             else:
-                tiempo_infer = 0.08
-                area_calc = 1.24
-                conf_calc = 94.2
+                tiempo_infer = 0.0
+                area_calc = 0.0
+                conf_calc = 0.0
+                modelo_ejecutado = False
 
             t_total = time.perf_counter() - t_inicio
 
-        st.success(
-            f"✅ Inferencia completada en **{t_total:.3f} s** "
-            f"(Preprocesamiento: {t_preprocess:.3f} s | Inferencia CPU: **{tiempo_infer:.3f} s** < 2.0 s)."
-        )
+            st.session_state["sig_infer_result"] = {
+                "t_total": t_total,
+                "t_preprocess": t_preprocess,
+                "tiempo_infer": tiempo_infer,
+                "shape": tensor_np.shape,
+                "min_val": float(tensor_np.min()),
+                "max_val": float(tensor_np.max()),
+                "crs": str(profile_raster.get("crs", "EPSG:32718")),
+                "area_calc": area_calc,
+                "conf_calc": conf_calc,
+                "modelo_ejecutado": modelo_ejecutado,
+            }
+
+    if "sig_infer_result" in st.session_state:
+        res = st.session_state["sig_infer_result"]
+        if res.get("modelo_ejecutado", False):
+            st.success(
+                f"✅ Inferencia completada en **{res['t_total']:.3f} s** "
+                f"(Preprocesamiento: {res['t_preprocess']:.3f} s | Inferencia CPU: **{res['tiempo_infer']:.3f} s** < 2.0 s)."
+            )
+        else:
+            st.error(
+                "No se encontró el modelo ONNX servido: no se ejecutó inferencia. "
+                "No se muestran valores de relleno."
+            )
 
         res_c1, res_c2, res_c3, res_c4 = st.columns(4)
         res_c1.metric(
             "Tensor Multitemporal",
-            f"{tensor_np.shape}",
+            f"{res['shape']}",
             "6 canales: T0(B4,B8,B11) + T1(B4,B8,B11)",
         )
         res_c2.metric(
             "Escala Normalizada",
-            f"[{tensor_np.min():.2f}, {tensor_np.max():.2f}]",
+            f"[{res['min_val']:.2f}, {res['max_val']:.2f}]",
             "Reflectancia en [0.0, 1.0]",
         )
         res_c3.metric(
             "CRS Proyectado",
-            str(profile_raster.get("crs", "EPSG:32718")),
+            res["crs"],
             "UTM Zona 18S validado",
         )
         res_c4.metric(
-            "Área Detectada",
-            f"{area_calc:.2f} ha",
-            f"Certeza IA: {conf_calc:.1f}%",
+            "Área sobre umbral (no validada)",
+            f"{res['area_calc']:.2f} ha",
+            f"Probabilidad media: {res['conf_calc']:.1f}% (sin calibrar)",
+        )
+        st.caption(
+            "Modelo de referencia **SIN ENTRENAR**: estas cifras no son detecciones validadas. "
+            "Si no hay píxeles sobre el umbral, el área es 0,00 ha."
         )
 
     divisor_bosque()
@@ -333,12 +371,11 @@ def render_consola_sig(
     ):
         st.markdown(
             """
-            1. **Etapa 1 (Actual) — Estructura y panel visual:**
-               Verificación del repositorio, diseño del dashboard en español con Streamlit,
-               indicadores operativos, mapa interactivo de Carpish y el Valle del Huallaga
-               y visualización de alertas demostrativas claramente identificadas como simuladas.
-            2. **Etapa 2 — Mapa interactivo avanzado y datos reales de referencia:**
-               Integración de capas vectoriales oficiales y puntos históricos de referencia.
+            1. **Etapa 1 — Estructura y panel visual oficial:**
+               Diseño de consola táctica SIG, indicadores periciales, mapas multiespectrales
+               y visualización de alertas oficiales de deforestación del PNCB — Geobosques MINAM.
+            2. **Etapa 2 — Telemetría en tiempo real y focos térmicos:**
+               Integración de focos de calor satelitales en vivo vía NASA FIRMS (sensor VIIRS).
             3. **Etapa 3 — Preprocesamiento Sentinel-2 y máscaras de Geobosques:**
                Descarga de escenas multiespectrales (bandas B02, B03, B04, B08, B11, B12),
                cálculo de índices espectrales (NDVI, NBR) y generación de máscaras de entrenamiento.

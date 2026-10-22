@@ -17,8 +17,11 @@ from src.infer import (
     ModelNotFoundError,
     ONNXForestPredictor,
     WindowConfigError,
+    apply_biophysical_filter,
     binarize,
     calculate_affected_area,
+    calibrate_probabilities,
+    compute_otsu_threshold,
     create_blend_window,
     extract_alerts,
 )
@@ -119,8 +122,11 @@ __all__ = [
     "ModelNotFoundError",
     "ONNXForestPredictor",
     "WindowConfigError",
+    "apply_biophysical_filter",
     "binarize",
     "calculate_affected_area",
+    "calibrate_probabilities",
+    "compute_otsu_threshold",
     "create_blend_window",
     "extract_alerts",
 ]

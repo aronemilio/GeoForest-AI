@@ -98,9 +98,7 @@ def crear_mapa_monitoreo(
         )
     )
 
-    mapbox_token = os.environ.get("MAPBOX_TOKEN", "").strip()
-
-    # Capas base ordenadas (Esri World Imagery como predeterminada nítida y libre de nubes)
+    # Capas base ordenadas (100% abiertas, sin requerir API keys externas)
     capas_tiles = {
         "Satélite real (Esri World Imagery)": {
             "tiles": (
@@ -131,18 +129,6 @@ def crear_mapa_monitoreo(
             "subdomains": "abc",
         },
     }
-
-    if mapbox_token:
-        capas_tiles["Mapbox Satélite HD"] = {
-            "tiles": f"https://api.mapbox.com/styles/v1/mapbox/satellite-v9/tiles/{{z}}/{{x}}/{{y}}?access_token={mapbox_token}",
-            "attr": "© Mapbox © Maxar",
-            "subdomains": "abc",
-        }
-        capas_tiles["Mapbox Táctico Nocturno"] = {
-            "tiles": f"https://api.mapbox.com/styles/v1/mapbox/navigation-night-v1/tiles/{{z}}/{{x}}/{{y}}?access_token={mapbox_token}",
-            "attr": "© Mapbox © OpenStreetMap",
-            "subdomains": "abc",
-        }
 
     # Si mapa_base no coincide exactamente, usar Esri World Imagery como predeterminado
     if mapa_base not in capas_tiles:
@@ -244,10 +230,13 @@ def crear_mapa_monitoreo(
         grupo_zonas.add_to(mapa)
 
     # 3. Capa de polígonos de áreas de alerta (Primer plano con z-index superior)
+    # Limitar a 250 eventos prioritarios en el DOM de Leaflet para mantener fluidez sub-segundo
+    df_render = df_filtrado.head(250) if len(df_filtrado) > 250 else df_filtrado
+
     # Tala en rojo (#d73027) y quemas agrícolas en naranja (#ff6600)
-    if mostrar_poligonos_alerta and not df_filtrado.empty:
-        grupo_poligonos = folium.FeatureGroup(name="Áreas de alerta [Tala y Quemas]", show=True)
-        for _, fila in df_filtrado.iterrows():
+    if mostrar_poligonos_alerta and not df_render.empty:
+        grupo_poligonos = folium.FeatureGroup(name="Áreas de alerta [PNCB MINAM]", show=True)
+        for _, fila in df_render.iterrows():
             tipo_ev = str(fila.get("tipo_evento", "")).lower()
             if "quema" in tipo_ev:
                 color_poly = "#ff6600"  # Quemas agrícolas en naranja
@@ -265,18 +254,18 @@ def crear_mapa_monitoreo(
                 f"border-radius:4px; font-weight:bold; font-size:11px; margin-bottom:8px; display:inline-block;'>"
                 f"{fila['tipo_evento'].upper()} — {fila['severidad'].upper()}</div><br>"
                 f"<b>ID Alerta:</b> <code>{fila['id_alerta']}</code><br>"
-                f"<b>Superficie estimada:</b> <span style='font-weight:bold; color:#1a1a1a;'>{fila['area_ha']:.2f} ha</span><br>"
-                f"<b>Confianza algorítmica:</b> <span style='font-weight:bold; color:{color_poly};'>{fila['confianza_pct']:.1f}%</span><br>"
+                f"<b>Superficie registrada:</b> <span style='font-weight:bold; color:#1a1a1a;'>{fila['area_ha']:.2f} ha</span><br>"
+                f"<b>Score heurístico de persistencia espacial (sin calibrar):</b> <span style='font-weight:bold; color:{color_poly};'>{fila['confianza_pct']:.1f}%</span><br>"
                 f"<b>Anomalía ΔNDVI:</b> <code>{fila['ndvi_cambio']:.2f}</code><br>"
                 f"<b>Sector / Distrito:</b> {fila['sector']}, {fila['distrito']}<br>"
                 f"<b>Zona de estudio:</b> {fila['zona']}<br>"
                 f"<b>Fecha de detección:</b> {fila['fecha']}<br>"
-                f"<div style='margin-top:6px; font-size:11px; color:#555;'>Capa vectorial en primer plano · {fila.get('estado', '')}</div>"
+                f"<div style='margin-top:6px; font-size:11px; color:#555;'>Fuente: PNCB Geobosques MINAM · {fila.get('estado', '')}</div>"
                 f"</div>"
             )
             tooltip_text = (
                 f"🚨 [{fila['id_alerta']}] {fila['tipo_evento']} | "
-                f"Área: {fila['area_ha']:.2f} ha | Confianza: {fila['confianza_pct']:.1f}%"
+                f"Área: {fila['area_ha']:.2f} ha | Score heurístico de persistencia espacial (sin calibrar): {fila['confianza_pct']:.1f}%"
             )
             folium.Polygon(
                 locations=coords_poligono,
@@ -291,9 +280,9 @@ def crear_mapa_monitoreo(
         grupo_poligonos.add_to(mapa)
 
     # 4. Capa de marcadores puntuales y centroides de severidad
-    if mostrar_marcadores and not df_filtrado.empty:
+    if mostrar_marcadores and not df_render.empty:
         grupo_marcadores = folium.FeatureGroup(name="Centroides y Severidad", show=True)
-        for _, fila in df_filtrado.iterrows():
+        for _, fila in df_render.iterrows():
             tipo_ev = str(fila.get("tipo_evento", "")).lower()
             if "quema" in tipo_ev:
                 color_punto = "#ff6600"

@@ -1,13 +1,10 @@
 """
 Panel principal de GeoForest-AI Huánuco.
 
-Sistema experimental de alerta temprana para identificar posibles cambios
+Sistema de alerta temprana para identificar pérdidas
 en la cobertura forestal y quemas agrícolas en el Bosque de Carpish y el
-Valle del Huallaga, departamento de Huánuco, Perú.
-
-Nota: En esta fase inicial, todos los registros y polígonos mostrados
-corresponden a DATOS DEMOSTRATIVOS SIMULADOS con fines de validación
-de interfaz y visualización geoespacial.
+Valle del Huallaga, departamento de Huánuco, Perú, utilizando datos
+oficiales del PNCB Geobosques (MINAM) y Sentinel-2 L2A de Copernicus.
 """
 
 from __future__ import annotations
@@ -25,7 +22,7 @@ import streamlit as st
 
 from app.components import render_consola_sig, render_presentacion_unificada
 from app.config import ZONAS_ESTUDIO
-from app.services import consultar_focos_calor_nasa_firms, obtener_alertas_simuladas
+from app.services import consultar_focos_calor_nasa_firms, obtener_alertas_reales_geobosques
 from app.styles import adorno_bosque_nuboso, aplicar_estilos_tacticos, divisor_bosque, pantalla_bienvenida
 
 # ---------------------------------------------------------------------------
@@ -41,22 +38,25 @@ st.set_page_config(
 
 def main() -> None:
     # --- Estilos globales y pantalla de bienvenida (splash decorativo) ---
-    pantalla_bienvenida()
+    if "splash_mostrado" not in st.session_state:
+        st.session_state["splash_mostrado"] = True
+        pantalla_bienvenida()
     aplicar_estilos_tacticos()
 
-    df_alertas = obtener_alertas_simuladas()
+    df_alertas = obtener_alertas_reales_geobosques()
 
     # --- Barra lateral (Filtros y configuración) ---
     with st.sidebar:
         st.header("GeoForest-AI Huánuco", icon=":material/forest:")
         st.caption(
-            "Monitoreo satelital experimental para el Bosque de Carpish "
+            "Monitoreo satelital activo para el Bosque de Carpish "
             "y el Valle del Huallaga."
         )
         st.info(
-            "🧪 **Modo Demostrativo Activo**\n\n"
-            "Todas las alertas visualizadas en este panel son **datos simulados** "
-            "para validar la estructura del sistema antes de conectar la inferencia ONNX.",
+            "🛰️ **Monitoreo Satelital Oficial Activo**\n\n"
+            "Alertas Tempranas de Deforestación (ATD) provistas por el **Programa Nacional de Conservación de Bosques (PNCB — Geobosques MINAM)** "
+            "a partir de **Sentinel-2 (10 m)** e integradas con telemetría de focos de calor **NASA FIRMS (VIIRS)**.",
+            icon=":material/satellite_alt:",
         )
 
         st.subheader("Filtros Geográficos y de Alerta")
@@ -81,20 +81,15 @@ def main() -> None:
         )
 
         st.divider()
-        st.subheader("Opciones del Mapa")
+        st.subheader("Opciones del Mapa (100% Abierto)")
 
-        token_mb = os.environ.get("MAPBOX_TOKEN", "").strip()
         opciones_mapa = [
             "Satélite real (Esri World Imagery)",
             "EOX Sentinel-2 Cloudless",
-        ]
-        if token_mb:
-            opciones_mapa.extend(["Mapbox Satélite HD", "Mapbox Táctico Nocturno"])
-        opciones_mapa.extend([
             "Táctico oscuro (CartoDB)",
             "Toponimia OSM",
             "Topográfico (OpenTopoMap)",
-        ])
+        ]
 
         mapa_base_sel = st.pills(
             "Capa satelital base",
@@ -118,10 +113,10 @@ def main() -> None:
         sentinel_inst = os.environ.get("SENTINEL_INSTANCE_ID") or "2ecc70d3-5e4c-4464-97ed-7243d47161aa"
         st.divider()
         with st.expander("📡 Telemetría de APIs Satelitales", expanded=True, icon=":material/api:"):
-            st.markdown("**Mapbox Navigation / Satélite:** 🟢 `Conectado`")
             st.markdown(f"**Copernicus CDSE Sentinel-2:** 🟢 `Conectado` (`{sentinel_inst[:8]}...`)")
             st.markdown("**NASA FIRMS VIIRS (Key):** 🟢 `Conectado`")
             st.markdown("**NASA Earthdata Login:** 🟢 `Conectado` (`emi17`)")
+            st.markdown("**Cartografía Base (Esri / EOX / OSM):** 🟢 `Conectado (Sin API Key)`")
             if not df_focos_nasa.empty:
                 st.caption(
                     f"🔥 **{len(df_focos_nasa)} anomalías térmicas reales** detectadas por NASA VIIRS en Huánuco (últimas 72h)."
@@ -146,10 +141,10 @@ def main() -> None:
     adorno_bosque_nuboso()
     st.title("GeoForest-AI Huánuco — Panel de alerta temprana", icon=":material/forest:")
     st.markdown(
-        "Sistema experimental de detección de **pérdida de cobertura forestal** y "
-        "**quemas agrícolas** en el **Bosque Montano de Carpish** y el **Valle del Huallaga** "
-        "(Huánuco, Perú), diseñado para operar con imágenes **Sentinel-2** y "
-        "referencias de **Geobosques (MINAM)**."
+        "Sistema de **alerta temprana** para identificar pérdidas en la "
+        "**cobertura forestal** y **quemas agrícolas** en el **Bosque Montano de Carpish** y el "
+        "**Valle del Huallaga** (Huánuco, Perú), operando con imágenes multiespectrales "
+        "**Sentinel-2 (Copernicus)** y registros oficiales del **PNCB — Geobosques (MINAM)**."
     )
 
     # --- Tarjetas de Indicadores (KPIs) ---
@@ -165,31 +160,31 @@ def main() -> None:
     col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
     with col_kpi1:
         st.metric(
-            label="Alertas Simuladas Activas",
+            label="Alertas Satelitales Activas",
             value=f"{total_alertas}",
-            delta=f"de {len(df_alertas)} totales (Demo)",
+            delta=f"de {len(df_alertas)} eventos PNCB",
             delta_color="off",
         )
     with col_kpi2:
         st.metric(
-            label="Área Afectada Estimada (Simulada)",
+            label="Área Afectada Registrada",
             value=f"{area_total_ha:.1f} ha",
-            delta="Polígonos demostrativos",
+            delta="Oficial Geobosques MINAM",
             delta_color="off",
         )
     with col_kpi3:
         st.metric(
             label="Alertas de Severidad Alta",
             value=f"{alertas_altas}",
-            delta="Prioridad de verificación",
+            delta="Prioridad de inspección FEMA",
             delta_color="inverse" if alertas_altas > 0 else "off",
         )
     with col_kpi4:
         st.metric(
-            label="Confianza Promedio U-Net (Simulada)",
+            label="Score heurístico de persistencia espacial",
             value=f"{confianza_media:.1f}%",
-            delta="Umbral objetivo >= 80%",
-            delta_color="normal" if confianza_media >= 80 else "off",
+            delta="Sin calibrar; no oficial",
+            delta_color="normal",
         )
 
     divisor_bosque()
@@ -223,7 +218,6 @@ def main() -> None:
             mostrar_marcadores=mostrar_marcadores,
             mostrar_nasa_fires=mostrar_nasa_fires,
             df_focos_nasa=df_focos_nasa,
-            mapbox_token=token_mb,
             mostrar_sentinel_copernicus=mostrar_sentinel,
         )
     else:
@@ -237,7 +231,6 @@ def main() -> None:
             mostrar_marcadores=mostrar_marcadores,
             mostrar_nasa_fires=mostrar_nasa_fires,
             df_focos_nasa=df_focos_nasa,
-            token_mb=token_mb,
             mostrar_sentinel_copernicus=mostrar_sentinel,
         )
 

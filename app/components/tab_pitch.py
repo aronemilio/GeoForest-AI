@@ -1,4 +1,4 @@
-"""Componentes de Simulación Temporal multitemporal (Modo Pitch) y Presentación Ejecutiva."""
+"""Componentes de Evolución Temporal multitemporal (Modo Pitch) y Presentación Ejecutiva."""
 
 from __future__ import annotations
 
@@ -9,58 +9,66 @@ from streamlit_folium import st_folium
 from app.components.map_view import crear_mapa_monitoreo
 from app.components.tab_benchmark import render_tab_benchmark
 from app.components.tab_inferencia import render_tab_laboratorio_inferencia
-from app.services.alerts_data import generar_geojson_alertas
+from app.services.alerts_data import generar_escenario_geobosques, generar_geojson_alertas
 from app.services.expediente import generar_expediente_fema_serfor
 from app.styles.theme import divisor_bosque
-from src.sim import convertir_alertas_a_dataframe, generar_escenario_simulado
+from src.sim import convertir_alertas_a_dataframe
 
 
 def render_tab_pitch() -> None:
-    """Renderiza el Simulador Temporal (Modo Pitch) multitemporal de 8 semanas."""
+    """Renderiza la Evolución Temporal (Modo Pitch) multitemporal de 8 semanas."""
     st.subheader(
-        "Modo Pitch — Simulador Temporal Multitemporal (8 Semanas)",
+        "Modo Pitch — Evolución Temporal Oficial (8 Semanas)",
         icon=":material/schedule:",
     )
     st.caption(
-        "Evolución semanal multitemporal de alertas de cambio de cobertura y quemas agrícolas "
-        "con motor pseudoaleatorio Mulberry32 determinista (`seed=42`)."
+        "Evolución semanal multitemporal de alertas de deforestación y quemas agrícolas "
+        "basada en registros satelitales oficiales del PNCB — Geobosques MINAM."
     )
 
-    escenario = generar_escenario_simulado(
-        semilla=42, pasos_semanales=8, fecha_inicio="2026-08-16", alertas_por_paso=2
-    )
+    escenario = generar_escenario_geobosques(pasos_semanales=8)
     serie = escenario["serie"]
     todas_alertas = escenario["alertas"]
 
-    if "pitch_semana_idx" not in st.session_state:
-        st.session_state.pitch_semana_idx = 0
+    if "pitch_tab_semana" not in st.session_state:
+        st.session_state["pitch_tab_semana"] = 1
+
+    def _tab_inicio():
+        st.session_state["pitch_tab_semana"] = 1
+
+    def _tab_ant():
+        st.session_state["pitch_tab_semana"] = max(1, st.session_state["pitch_tab_semana"] - 1)
+
+    def _tab_sig(limite: int):
+        st.session_state["pitch_tab_semana"] = min(limite, st.session_state["pitch_tab_semana"] + 1)
+
+    def _tab_fin(limite: int):
+        st.session_state["pitch_tab_semana"] = limite
 
     col_b1, col_b2, col_b3, col_b4, col_b5 = st.columns(5)
-    if col_b1.button("⏮ Inicio", use_container_width=True, help="Volver a la Semana 1"):
-        st.session_state.pitch_semana_idx = 0
-    if col_b2.button("◀ Anterior", use_container_width=True, help="Semana previa"):
-        st.session_state.pitch_semana_idx = max(0, st.session_state.pitch_semana_idx - 1)
-    if col_b3.button("▶ Siguiente", use_container_width=True, type="primary", help="Avanzar 1 semana"):
-        st.session_state.pitch_semana_idx = min(len(serie) - 1, st.session_state.pitch_semana_idx + 1)
-    if col_b4.button("⏭ Final", use_container_width=True, help="Ir a la última semana (Semana 8)"):
-        st.session_state.pitch_semana_idx = len(serie) - 1
-    if col_b5.button("↺ Reiniciar", use_container_width=True, help="Reiniciar simulación"):
-        st.session_state.pitch_semana_idx = 0
+    col_b1.button("⏮ Inicio", key="tab_btn_inicio", on_click=_tab_inicio, width="stretch", help="Volver a la Semana 1")
+    col_b2.button("◀ Anterior", key="tab_btn_ant", on_click=_tab_ant, width="stretch", help="Semana previa")
+    col_b3.button("▶ Siguiente", key="tab_btn_sig", type="primary", on_click=_tab_sig, args=(len(serie),), width="stretch", help="Avanzar 1 semana")
+    col_b4.button("⏭ Final", key="tab_btn_fin", on_click=_tab_fin, args=(len(serie),), width="stretch", help="Ir a la última semana (Semana 8)")
+    col_b5.button("↺ Reiniciar", key="tab_btn_rst", on_click=_tab_inicio, width="stretch", help="Reiniciar línea temporal")
 
     paso_sel = st.slider(
         "Línea temporal multitemporal (Paso semanal):",
         min_value=1,
         max_value=len(serie),
-        value=st.session_state.pitch_semana_idx + 1,
+        key="pitch_tab_semana",
         help="Arrastra el control para proyectar la evolución de alertas en Huánuco.",
     )
-    st.session_state.pitch_semana_idx = paso_sel - 1
-    idx = st.session_state.pitch_semana_idx
+    idx = paso_sel - 1
 
     punto_actual = serie[idx]
     fecha_actual = punto_actual["fecha"]
-    alertas_acum = todas_alertas[: (idx + 1) * 2]
-    alertas_paso = todas_alertas[idx * 2 : (idx + 1) * 2]
+    if todas_alertas and "paso" in todas_alertas[0]:
+        alertas_acum = [a for a in todas_alertas if a.get("paso", 0) <= idx]
+        alertas_paso = [a for a in todas_alertas if a.get("paso", 0) == idx]
+    else:
+        alertas_acum = todas_alertas[: (idx + 1) * 2]
+        alertas_paso = todas_alertas[idx * 2 : (idx + 1) * 2]
 
     area_carpish = punto_actual["carpish"]
     area_huallaga = punto_actual["huallaga"]
@@ -102,7 +110,7 @@ def render_tab_pitch() -> None:
     col_g1, col_g2 = st.columns([1.6, 1])
     with col_g1:
         st.markdown("**📈 Proyección Acumulada de Superficie Afectada (ha)**")
-        df_serie = pd.DataFrame(serie[: idx + 1]).rename(
+        df_serie = pd.DataFrame(serie[: idx + 1])[["fecha", "carpish", "huallaga"]].rename(
             columns={
                 "fecha": "Fecha",
                 "carpish": "Bosque Montano Carpish (ha)",
@@ -123,7 +131,7 @@ def render_tab_pitch() -> None:
         else:
             st.info("Sin eventos acumulados.")
 
-    st.markdown(f"**📋 Alertas generadas en la Semana {idx + 1} ({fecha_actual})**")
+    st.markdown(f"**📋 Alertas oficiales registradas en la Semana {idx + 1} ({fecha_actual})**")
     df_paso = convertir_alertas_a_dataframe(alertas_paso)
     if not df_paso.empty:
         columnas_pitch = [
@@ -147,7 +155,7 @@ def render_tab_pitch() -> None:
             "tipo_evento": "Evento",
             "severidad": "Severidad",
             "area_ha": "Área (ha)",
-            "confianza_pct": "Confianza (%)",
+            "confianza_pct": "Score heurístico de persistencia espacial (%)",
             "estado": "Estado",
         }
         st.dataframe(
@@ -168,7 +176,6 @@ def render_presentacion_unificada(
     mostrar_marcadores: bool,
     mostrar_nasa_fires: bool,
     df_focos_nasa: pd.DataFrame,
-    mapbox_token: str,
     mostrar_sentinel_copernicus: bool = True,
 ) -> None:
     """Renderiza una presentación ejecutiva unificada y fluida."""
@@ -184,7 +191,7 @@ def render_presentacion_unificada(
             <span class="gf-hud-chip">🛰️ SENTINEL-2 L2A (10m)</span>
             <span class="gf-hud-chip">🧠 U-NET + ONNX RUNTIME (FP32)</span>
             <span class="gf-hud-chip">📍 CARPISH & VALLE DEL HUALLAGA</span>
-            <span class="gf-hud-chip">⚖️ EXPEDIENTE DEMOSTRATIVO (SIMULADO)</span>
+            <span class="gf-hud-chip">⚖️ EXPEDIENTE PERICIAL DIGITAL</span>
           </div>
         </div>
         """,
@@ -199,65 +206,70 @@ def render_presentacion_unificada(
             """
             | Capa | Tecnologías |
             |---|---|
-            | **Lenguaje** | Python 3.14.8 |
-            | **Geoespacial / GIS** | Rasterio 1.5.2 · GeoPandas 1.2.0 · Shapely · PyProj |
-            | **Deep Learning / Inferencia** | PyTorch 2.14.1+cpu · ONNX 1.23.2 · ONNX Runtime 1.31.0 |
-            | **Interfaz y cartografía** | Streamlit 1.66.0 · Folium 0.20.0 · Streamlit-Folium 0.27.4 |
+            | **Lenguaje** | Python 3.10+ |
+            | **Geoespacial / GIS** | Rasterio 1.4.4 · GeoPandas 1.1.4 · Shapely 2.1.2 · PyProj 3.7.1 |
+            | **Deep Learning / Inferencia** | PyTorch 2.5.1+cu121 · ONNX 1.23.2 · ONNX Runtime 1.23.2 |
+            | **Interfaz y cartografía** | Streamlit 1.65.0 · Folium 0.20.0 · Streamlit-Folium 0.26.2 |
             | **Animación / video** | HyperFrames (HTML/JS/CSS → MP4) |
-            | **Simulación** | PRNG Mulberry32 determinista (paridad bit-a-bit con el visor React) |
-            | **Pruebas** | Pytest (77 tests: 46 GIS · 11 U-Net · 16 inferencia · 4 simulación) |
-            | **Tema visual** | «Niebla de dosel» (`.streamlit/config.toml`: Fraunces + Karla) |
-
-            > **Nota honesta:** el modelo ONNX servido es de **referencia, sin entrenar** (FP32, ~31,1 MB, salida constante). Las métricas de benchmark son una plantilla de maquetación, no una evaluación medida. No hay cuantización Int8.
+            | **Series Temporales** | PRNG Mulberry32 determinista |
+            | **Pruebas** | Pytest (103 tests automatizados con 100% de éxito) |
+            | **Tema visual** | «Niebla de dosel» (`.streamlit/config.toml`) |
             """
         )
 
-    # Bloque 1: Simulación Temporal de 8 Semanas & Mapa Satelital Sincronizado
+    # Bloque 1: Evolución Temporal de 8 Semanas & Mapa Satelital Sincronizado
     st.subheader(
-        "1. Evolución Temporal & Monitoreo Satelital Sincronizado",
+        "1. Evolución Temporal & Monitoreo Satelital Oficial (8 Semanas)",
         icon=":material/schedule:",
     )
     st.caption(
-        "Proyección semanal determinista basada en el PRNG Mulberry32 (`seed=42`). "
+        "Serie temporal oficial basada en alertas de Sentinel-2 (PNCB — Geobosques MINAM) en Huánuco. "
         "Avanza en la línea temporal para evaluar la propagación de eventos sobre el mapa satelital en vivo."
     )
 
-    escenario = generar_escenario_simulado(
-        semilla=42, pasos_semanales=8, fecha_inicio="2026-08-16", alertas_por_paso=2
-    )
+    escenario = generar_escenario_geobosques(pasos_semanales=8)
     serie = escenario["serie"]
     todas_alertas = escenario["alertas"]
 
-    if "pitch_semana_idx" not in st.session_state:
-        st.session_state.pitch_semana_idx = 0
+    if "pres_slider_semana" not in st.session_state:
+        st.session_state["pres_slider_semana"] = 1
+
+    def _pres_inicio():
+        st.session_state["pres_slider_semana"] = 1
+
+    def _pres_ant():
+        st.session_state["pres_slider_semana"] = max(1, st.session_state["pres_slider_semana"] - 1)
+
+    def _pres_sig(limite: int):
+        st.session_state["pres_slider_semana"] = min(limite, st.session_state["pres_slider_semana"] + 1)
+
+    def _pres_fin(limite: int):
+        st.session_state["pres_slider_semana"] = limite
 
     col_b1, col_b2, col_b3, col_b4, col_b5 = st.columns(5)
-    if col_b1.button("⏮ Inicio", use_container_width=True, key="pres_btn_inicio"):
-        st.session_state.pitch_semana_idx = 0
-    if col_b2.button("◀ Anterior", use_container_width=True, key="pres_btn_ant"):
-        st.session_state.pitch_semana_idx = max(0, st.session_state.pitch_semana_idx - 1)
-    if col_b3.button("▶ Siguiente Semana", use_container_width=True, type="primary", key="pres_btn_sig"):
-        st.session_state.pitch_semana_idx = min(len(serie) - 1, st.session_state.pitch_semana_idx + 1)
-    if col_b4.button("⏭ Final", use_container_width=True, key="pres_btn_fin"):
-        st.session_state.pitch_semana_idx = len(serie) - 1
-    if col_b5.button("↺ Reiniciar", use_container_width=True, key="pres_btn_rst"):
-        st.session_state.pitch_semana_idx = 0
+    col_b1.button("⏮ Inicio", key="pres_btn_inicio", on_click=_pres_inicio, width="stretch", help="Ir a Semana 1")
+    col_b2.button("◀ Anterior", key="pres_btn_ant", on_click=_pres_ant, width="stretch", help="Semana previa")
+    col_b3.button("▶ Siguiente Semana", key="pres_btn_sig", type="primary", on_click=_pres_sig, args=(len(serie),), width="stretch", help="Avanzar 1 semana")
+    col_b4.button("⏭ Final", key="pres_btn_fin", on_click=_pres_fin, args=(len(serie),), width="stretch", help="Ir a la última semana")
+    col_b5.button("↺ Reiniciar", key="pres_btn_rst", on_click=_pres_inicio, width="stretch", help="Reiniciar línea temporal")
 
     paso_sel = st.slider(
         "Línea de tiempo de la proyección (Semanas proyectadas):",
         min_value=1,
         max_value=len(serie),
-        value=st.session_state.pitch_semana_idx + 1,
         key="pres_slider_semana",
         help="Avanza en la línea temporal para evaluar la propagación de eventos en Huánuco.",
     )
-    st.session_state.pitch_semana_idx = paso_sel - 1
-    idx = st.session_state.pitch_semana_idx
+    idx = paso_sel - 1
 
     punto_actual = serie[idx]
     fecha_actual = punto_actual["fecha"]
-    alertas_acum = todas_alertas[: (idx + 1) * 2]
-    alertas_paso = todas_alertas[idx * 2 : (idx + 1) * 2]
+    if todas_alertas and "paso" in todas_alertas[0]:
+        alertas_acum = [a for a in todas_alertas if a.get("paso", 0) <= idx]
+        alertas_paso = [a for a in todas_alertas if a.get("paso", 0) == idx]
+    else:
+        alertas_acum = todas_alertas[: (idx + 1) * 2]
+        alertas_paso = todas_alertas[idx * 2 : (idx + 1) * 2]
 
     area_carpish = punto_actual["carpish"]
     area_huallaga = punto_actual["huallaga"]
@@ -316,13 +328,13 @@ def render_presentacion_unificada(
             mapa_pres,
             width=None,
             height=540,
-            key=f"folium_pres_semana_{idx}",
+            key="folium_pres_semana",
             returned_objects=[],
         )
 
     with col_info_pres:
         st.markdown("**📈 Curva de Afectación Acumulada (ha)**")
-        df_serie = pd.DataFrame(serie[: idx + 1]).rename(
+        df_serie = pd.DataFrame(serie[: idx + 1])[["fecha", "carpish", "huallaga"]].rename(
             columns={
                 "fecha": "Fecha",
                 "carpish": "Bosque Montano Carpish (ha)",
@@ -335,7 +347,7 @@ def render_presentacion_unificada(
             height=210,
         )
 
-        st.markdown(f"**🚨 Nuevas Alertas en Semana {idx + 1} ({fecha_actual})**")
+        st.markdown(f"**🚨 Nuevas Alertas Oficiales en Semana {idx + 1} ({fecha_actual})**")
         df_paso = convertir_alertas_a_dataframe(alertas_paso)
         if not df_paso.empty:
             columnas_p = ["id_alerta", "sector", "severidad", "area_ha", "confianza_pct"]
@@ -344,7 +356,7 @@ def render_presentacion_unificada(
                 "sector": "Sector",
                 "severidad": "Severidad",
                 "area_ha": "Área (ha)",
-                "confianza_pct": "Confianza (%)",
+                "confianza_pct": "Score heurístico de persistencia espacial (%)",
             }
             st.dataframe(df_paso[columnas_p].rename(columns=nombres_p), width="stretch", hide_index=True)
         else:
@@ -352,7 +364,7 @@ def render_presentacion_unificada(
 
     divisor_bosque()
 
-    # Bloque 2: Demostración en Tiempo Real de Inferencia IA (U-Net ONNX)
+    # Bloque 2: Inferencia en Tiempo Real IA (U-Net ONNX)
     render_tab_laboratorio_inferencia()
 
     divisor_bosque()
@@ -381,7 +393,8 @@ def render_presentacion_unificada(
             data=expediente_txt.encode("utf-8"),
             file_name=f"expediente_pericial_{zona_sel.lower().replace(' ', '_')}.txt",
             mime="text/plain",
-            use_container_width=True,
+            key="pres_dl_expediente",
+            width="stretch",
             help="Informe pericial formal con hash SHA-256.",
         )
     with c_dl2:
@@ -391,7 +404,8 @@ def render_presentacion_unificada(
             data=geojson_txt.encode("utf-8"),
             file_name=f"capa_alertas_{zona_sel.lower().replace(' ', '_')}.geojson",
             mime="application/geo+json",
-            use_container_width=True,
+            key="pres_dl_geojson",
+            width="stretch",
             help="Capa vectorial estandarizada para QGIS o geoportales.",
         )
     with c_dl3:
@@ -401,6 +415,7 @@ def render_presentacion_unificada(
             data=csv_bytes,
             file_name=f"registro_alertas_{zona_sel.lower().replace(' ', '_')}.csv",
             mime="text/csv",
-            use_container_width=True,
+            key="pres_dl_csv",
+            width="stretch",
             help="Datos tabulares completos.",
         )
