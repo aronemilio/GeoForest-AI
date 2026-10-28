@@ -63,21 +63,27 @@ class DoubleConv(nn.Module):
         in_channels: int,
         out_channels: int,
         mid_channels: int | None = None,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         if in_channels < 1 or out_channels < 1:
             raise ModelConfigError("Los canales deben ser enteros positivos >= 1.")
+        if not 0.0 <= float(dropout) < 1.0:
+            raise ModelConfigError(f"dropout debe estar en [0.0, 1.0), recibido: {dropout}")
         if mid_channels is None:
             mid_channels = out_channels
 
-        self.double_conv = nn.Sequential(
+        layers: list[nn.Module] = [
             nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(mid_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
-        )
+        ]
+        if dropout > 0.0:
+            layers.append(nn.Dropout2d(p=float(dropout)))
+        self.double_conv = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.double_conv(x)
@@ -89,11 +95,16 @@ class Down(nn.Module):
     ``MaxPool2d(2) -> DoubleConv(in_channels, out_channels)``.
     """
 
-    def __init__(self, in_channels: int, out_channels: int) -> None:
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        dropout: float = 0.0,
+    ) -> None:
         super().__init__()
         self.maxpool_conv = nn.Sequential(
             nn.MaxPool2d(kernel_size=2, stride=2),
-            DoubleConv(in_channels, out_channels),
+            DoubleConv(in_channels, out_channels, dropout=dropout),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -113,18 +124,19 @@ class Up(nn.Module):
         in_channels: int,
         out_channels: int,
         bilinear: bool = False,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         self.bilinear = bilinear
 
         if bilinear:
             self.up = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
-            self.conv = DoubleConv(in_channels, out_channels, in_channels // 2)
+            self.conv = DoubleConv(in_channels, out_channels, in_channels // 2, dropout=dropout)
         else:
             self.up = nn.ConvTranspose2d(
                 in_channels, in_channels // 2, kernel_size=2, stride=2
             )
-            self.conv = DoubleConv(in_channels, out_channels)
+            self.conv = DoubleConv(in_channels, out_channels, dropout=dropout)
 
     def forward(self, x1: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
         x1 = self.up(x1)
@@ -170,6 +182,7 @@ class UNet(nn.Module):
         num_classes: Número de clases de predicción (por defecto 1, binario).
         base_features: Número de filtros base en el primer bloque (por defecto 32 o 64).
         bilinear: Utilizar sobremuestreo bilineal en lugar de convolución transpuesta.
+        dropout: Tasa de Dropout2d espacial en el cuello de botella y decodificador.
     """
 
     def __init__(
@@ -178,6 +191,7 @@ class UNet(nn.Module):
         num_classes: int = DEFAULT_NUM_CLASSES,
         base_features: int = DEFAULT_BASE_FEATURES,
         bilinear: bool = False,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         if in_channels < 1:
@@ -186,22 +200,40 @@ class UNet(nn.Module):
             raise ModelConfigError(f"num_classes debe ser >= 1, recibido: {num_classes}")
         if base_features < 8:
             raise ModelConfigError(f"base_features debe ser >= 8, recibido: {base_features}")
+        if not 0.0 <= float(dropout) < 1.0:
+            raise ModelConfigError(f"dropout debe estar en [0.0, 1.0), recibido: {dropout}")
 
         self.in_channels = in_channels
         self.num_classes = num_classes
         self.base_features = base_features
         self.bilinear = bilinear
+        self.dropout = float(dropout)
 
         factor = 2 if bilinear else 1
+        dec_drop = round(self.dropout * 0.5, 4)
 
         self.inc = DoubleConv(in_channels, base_features)
         self.down1 = Down(base_features, base_features * 2)
         self.down2 = Down(base_features * 2, base_features * 4)
-        self.down3 = Down(base_features * 4, base_features * 8)
-        self.down4 = Down(base_features * 8, (base_features * 16) // factor)
+        self.down3 = Down(base_features * 4, base_features * 8, dropout=self.dropout)
+        self.down4 = Down(
+            base_features * 8,
+            (base_features * 16) // factor,
+            dropout=self.dropout,
+        )
 
-        self.up1 = Up(base_features * 16, (base_features * 8) // factor, bilinear=bilinear)
-        self.up2 = Up(base_features * 8, (base_features * 4) // factor, bilinear=bilinear)
+        self.up1 = Up(
+            base_features * 16,
+            (base_features * 8) // factor,
+            bilinear=bilinear,
+            dropout=dec_drop,
+        )
+        self.up2 = Up(
+            base_features * 8,
+            (base_features * 4) // factor,
+            bilinear=bilinear,
+            dropout=dec_drop,
+        )
         self.up3 = Up(base_features * 4, (base_features * 2) // factor, bilinear=bilinear)
         self.up4 = Up(base_features * 2, base_features, bilinear=bilinear)
         self.outc = OutConv(base_features, num_classes)

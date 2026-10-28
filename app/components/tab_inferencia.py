@@ -230,14 +230,14 @@ def render_tab_laboratorio_inferencia() -> None:
         with c_opt1:
             aplicar_filtro_bio = st.checkbox(
                 "Filtro biofísico (ΔNBR / ΔNDVI)",
-                value=True,
-                help="Descarta falsos positivos requiriendo caída de humedad o dosel vegetal real.",
+                value=False,
+                help="Desactivado en producción: la red U-Net opera directamente con probabilidades calibradas.",
             )
         with c_opt2:
             reescalar_score = st.checkbox(
                 "Reescalar score continuo (0-100%)",
-                value=True,
-                help="Reescala el mapa continuo a 0–100 % como score relativo. No es calibración estadística ni una probabilidad de acierto.",
+                value=False,
+                help="Desactivado en producción: el grafo ONNX ya integra Temperature Scaling Sigmoid(logits / T).",
             )
 
     # Botón principal de ejecución
@@ -252,8 +252,8 @@ def render_tab_laboratorio_inferencia() -> None:
         st.session_state["ultima_inferencia"] = True
 
         try:
-            # 1. Cargar predictor ONNX
-            predictor = ONNXForestPredictor(str(modelo_onnx_path))
+            # 1. Cargar predictor ONNX (el grafo ONNX ya incluye Sigmoid(logits / T))
+            predictor = ONNXForestPredictor(str(modelo_onnx_path), temperature=1.0)
 
             # 2. Inferencia y cronometraje de alta precisión
             t_inicio = time.perf_counter()
@@ -271,42 +271,28 @@ def render_tab_laboratorio_inferencia() -> None:
 
             latencia_ms = (time.perf_counter() - t_inicio) * 1000.0
 
-            # Determinación de umbral efectivo
-            if modo_umbral == "Adaptativo (Otsu)" or umbral_decision is None:
-                umbral_efectivo = compute_otsu_threshold(prob_map)
-                etiqueta_umbral = f"{umbral_efectivo:.3f} (Otsu)"
-            else:
+            # Determinación de umbral efectivo sobre probabilidades calibradas (por defecto p = 0.50)
+            if umbral_decision is not None:
                 umbral_efectivo = float(umbral_decision)
-                etiqueta_umbral = f"{umbral_efectivo:.3f} (Manual)"
-
-            # Escala continua (sin calibrar)
-            if reescalar_score:
-                prob_eval = calibrate_probabilities(prob_map)
+                etiqueta_umbral = f"{umbral_efectivo:.3f} (Calibrado)"
             else:
-                prob_eval = prob_map
+                umbral_efectivo = 0.50
+                etiqueta_umbral = "0.500 (Calibrado)"
 
-            # 3. Post-procesamiento
-            mascara_binaria = binarize(prob_map, threshold=umbral_efectivo)
+            # Salida pura del modelo calibrado (sin reescalado por percentiles 5-99.5 ni filtro biofísico)
+            prob_eval = prob_map
+            mascara_binaria = binarize(prob_eval, threshold=umbral_efectivo)
             px_brutos = int(np.count_nonzero(mascara_binaria))
-
-            # Filtro biofísico multitemporal
-            if aplicar_filtro_bio and tensor_5c.shape[0] >= 6:
-                mascara_binaria = apply_biophysical_filter(
-                    mask=mascara_binaria,
-                    tensor_6ch=tensor_5c,
-                    min_dnbr=0.15,
-                    min_dndvi=0.10,
-                )
-            px_refinados = int(np.count_nonzero(mascara_binaria))
-            descarte_bio_ha = ((px_brutos - px_refinados) * (meta_parche["pixel_size_m"] ** 2)) / 10000.0
+            px_refinados = px_brutos
+            descarte_bio_ha = 0.0
 
             area_afectada_ha = calculate_affected_area(mascara_binaria, pixel_size_m=meta_parche["pixel_size_m"])
 
-            # 4. Extracción vectorial de alertas
+            # 4. Extracción vectorial de alertas con probabilidades calibradas directas
             alertas_vectoriales = extract_alerts(
                 mask=mascara_binaria,
-                prob_map=prob_map,
-                calibrated_prob_map=prob_eval if reescalar_score else None,
+                prob_map=prob_eval,
+                calibrated_prob_map=None,
                 transform=meta_parche["transform"],
                 crs=CRS.from_epsg(32718),
                 min_area_ha=0.05,

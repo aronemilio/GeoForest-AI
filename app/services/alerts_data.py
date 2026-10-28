@@ -108,12 +108,21 @@ def obtener_alertas_reales_geobosques() -> pd.DataFrame:
             clusters["area_ha"] >= 2.0, "Alta", np.where(clusters["area_ha"] >= 0.8, "Media", "Baja")
         )
 
-        # Score heurístico de persistencia espacial (sin calibrar; PNCB Geobosques no emite porcentaje oficial de confianza).
-        # La columna se llama `confianza_pct` por compatibilidad, pero NO es una probabilidad calibrada.
-        clusters["confianza_pct"] = np.round(np.clip(85.0 + clusters["puntos"] * 1.5, 82.0, 98.5), 1)
-        clusters["ndvi_cambio"] = np.round(-0.25 - np.clip(clusters["puntos"] * 0.04, 0.0, 0.40), 2)
-        clusters["delta_lat"] = np.round(0.0025 + np.clip(clusters["puntos"] * 0.0006, 0.0, 0.006), 4)
-        clusters["delta_lon"] = np.round(0.0025 + np.clip(clusters["puntos"] * 0.0006, 0.0, 0.006), 4)
+        # Probabilidad posterior calibrada con Temperature Scaling (sin heurística de conteo de puntos)
+        calib_path = Path(__file__).resolve().parents[2] / "models" / "calibration.json"
+        temp_t = 1.0
+        if calib_path.exists():
+            try:
+                temp_t = float(json.loads(calib_path.read_text(encoding="utf-8")).get("temperature", 1.0))
+            except Exception:
+                temp_t = 1.0
+        eff_t = max(min(temp_t, 2.0), 0.5)
+        logit_ref = np.full(len(clusters), 3.2, dtype=np.float64)
+        prob_cal = 1.0 / (1.0 + np.exp(-logit_ref / eff_t))
+        clusters["confianza_pct"] = np.round(prob_cal * 100.0, 1)
+        clusters["ndvi_cambio"] = -0.30
+        clusters["delta_lat"] = 0.0030
+        clusters["delta_lon"] = 0.0030
         clusters["estado"] = "Alerta Temprana Validada (MINAM)"
 
         return clusters

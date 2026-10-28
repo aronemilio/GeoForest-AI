@@ -553,7 +553,13 @@ class ONNXForestPredictor:
         self.temperature = float(temperature) if temperature is not None else load_temperature(p)
 
         if providers is None:
-            providers = ["CPUExecutionProvider"]
+            available = set(ort.get_available_providers())
+            preferred = [
+                prov
+                for prov in ("TensorrtExecutionProvider", "CUDAExecutionProvider", "ROCMExecutionProvider")
+                if prov in available
+            ]
+            providers = [*preferred, "CPUExecutionProvider"]
 
         if session_options is None:
             session_options = ort.SessionOptions()
@@ -567,7 +573,21 @@ class ONNXForestPredictor:
                 providers=providers,
             )
         except Exception as exc:
-            raise InferenceError(f"Error al inicializar sesión ONNX Runtime para {p}: {exc}") from exc
+            if providers != ["CPUExecutionProvider"]:
+                try:
+                    self.session = ort.InferenceSession(
+                        str(p),
+                        sess_options=session_options,
+                        providers=["CPUExecutionProvider"],
+                    )
+                except Exception as inner_exc:
+                    raise InferenceError(
+                        f"Error al inicializar sesión ONNX Runtime para {p}: {inner_exc}"
+                    ) from inner_exc
+            else:
+                raise InferenceError(
+                    f"Error al inicializar sesión ONNX Runtime para {p}: {exc}"
+                ) from exc
 
         inputs = self.session.get_inputs()
         outputs = self.session.get_outputs()

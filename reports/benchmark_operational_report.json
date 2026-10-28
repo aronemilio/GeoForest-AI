@@ -1,0 +1,89 @@
+{
+  "system": "GeoForest-AI Huánuco",
+  "tile": "18LUQ",
+  "crs": "EPSG:32718",
+  "resolution_m": 10.0,
+  "certified_at_utc": "2026-10-28T04:41:28.051319+00:00",
+  "quality_gate_passed": true,
+  "heuristic_postprocessing_enabled": false,
+  "spatial_audit": {
+    "crs_verified": true,
+    "cell_size_m": 10.0,
+    "train_bounds": [
+      342801.11888999434,
+      8978398.846815567,
+      391082.238517791,
+      8998301.22824311
+    ],
+    "val_bounds": [
+      376138.2715440313,
+      8908528.726110345,
+      396157.85452860943,
+      8952349.651827935
+    ],
+    "spatial_intersection_pixels": 0,
+    "train_val_bounds_intersect": false
+  },
+  "benchmark_metrics": {
+    "global": {
+      "tp": 119693,
+      "fp": 11396,
+      "fn": 8426,
+      "tn": 1957637,
+      "total_pixels": 2097152,
+      "iou": 0.8579,
+      "f1": 0.9235,
+      "precision": 0.9131,
+      "recall": 0.9342
+    },
+    "bosque_carpish": {
+      "tp": 84660,
+      "fp": 7781,
+      "fn": 3875,
+      "tn": 952260,
+      "total_pixels": 1048576,
+      "iou": 0.879,
+      "f1": 0.9356,
+      "precision": 0.9158,
+      "recall": 0.9562
+    },
+    "valle_huallaga": {
+      "tp": 35033,
+      "fp": 3615,
+      "fn": 4551,
+      "tn": 1005377,
+      "total_pixels": 1048576,
+      "iou": 0.811,
+      "f1": 0.8956,
+      "precision": 0.9065,
+      "recall": 0.885
+    }
+  },
+  "calibration_metrics": {
+    "temperature": 0.3277,
+    "ece_15_before": 0.13809,
+    "ece_15_after": 0.0083,
+    "mce_15_before": 0.18693,
+    "mce_15_after": 0.27555,
+    "brier_before": 0.02732,
+    "brier_after": 0.00773,
+    "brier_reference": 0.05736,
+    "brier_skill_score_before": 0.5237,
+    "brier_skill_score_after": 0.8652,
+    "auroc_before": 0.997865,
+    "auroc_after": 0.997865,
+    "ap_before": 0.978473,
+    "ap_after": 0.978473
+  },
+  "artifacts": {
+    "checkpoint_path": "models/unet_best.pth",
+    "checkpoint_sha256": "19929711393f4fd92e5e072767a5c905f60bda151e87463c3c5ac6a4616ce80b",
+    "onnx_path": "models/unet_geoforest.onnx",
+    "onnx_sha256": "5df724196434c93562ea2e4331b78d89c54ee73daeaeafd209bb8098e4ede4a8",
+    "symlinks": {
+      "unet_sentinel2_huanuco.onnx": true,
+      "unet_sentinel2_multitemporal.onnx": true
+    },
+    "manifest_verified": true
+  }
+}

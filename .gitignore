@@ -3,7 +3,9 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+venv
 venv/
+env/
 
 # Entornos y secretos
 .env
@@ -15,6 +17,8 @@ venv/
 .idea/
 
 # Datos geoespaciales locales
+/data
+/data/
 data/raw/*
 data/processed/*
 data/masks/*
@@ -22,6 +26,9 @@ data/masks/*
 # Modelos entrenados
 models/*
 !models/.gitkeep
+!models/manifest.json
+!models/calibration.json
+!models/training_metrics.json
 
 # Temporales
 *.log

@@ -176,7 +176,7 @@ def _load_label(label_path: str) -> np.ndarray:
     return change.astype(np.uint8)
 
 
-@lru_cache(maxsize=6)
+@lru_cache(maxsize=32)
 def _load_city_arrays(data_root: str, city: str) -> tuple[np.ndarray, np.ndarray]:
     """Carga y normaliza las 6 bandas de una ciudad y su máscara de cambio."""
     images_root, labels_root = _resolve_roots(data_root)
@@ -500,7 +500,7 @@ def discover_sentinel2_scenes(sentinel2_root: str | Path = "data/raw/sentinel2")
     return scenes
 
 
-@lru_cache(maxsize=4)
+@lru_cache(maxsize=256)
 def load_huanuco_sentinel2_scene(
     sentinel2_root: str | Path = "data/raw/sentinel2",
     geobosques_shp: str | Path = "data/raw/geobosques/PNCB_ATD_UTM_01_273_S.shp",
@@ -594,4 +594,260 @@ def load_huanuco_sentinel2_scene(
             pass
 
     return image, mask.astype(np.uint8)
+
+
+@dataclass(frozen=True)
+class HuanucoPairMetadata:
+    """Metadatos espaciales y temporales de un par (T0, T1) de Huánuco."""
+
+    t0_name: str
+    t1_name: str
+    zone_id: str
+    chip_code: str
+    chip_id: str
+    fecha_t0: str
+    fecha_t1: str
+
+
+def parse_huanuco_pair_metadata(t0_name: str, t1_name: str) -> HuanucoPairMetadata:
+    """Extrae ``zone_id``, ``chip_code`` y ``chip_id`` de un par (T0, T1) de Huánuco.
+
+    - Para chips de las seis zonas (formato ``YYYY-MM-DD_<zone_id>_p<rc>_<scene_id>``):
+      valida que T0 y T1 pertenezcan exactamente a la misma zona y al mismo chip ``p<rc>``.
+    - Para escenas del parche histórico de Carpish (formato ``YYYY-MM-DD_S2...``):
+      asigna ``zone_id="00_carpish_referencia"`` y ``chip_code="p00"``.
+    """
+    import re
+
+    zone_re = re.compile(r"^(\d{4}-\d{2}-\d{2})_(.+?)_p(\d{2})(?:_(.+))?$")
+    m0 = zone_re.match(t0_name)
+    m1 = zone_re.match(t1_name)
+
+    if m0 is not None or m1 is not None:
+        if m0 is None or m1 is None:
+            raise DatasetError(
+                f"Par inválido que mezcla chip de zona con escena suelta: {t0_name} -> {t1_name}"
+            )
+        fecha_t0, zone_0, rc_0, _ = m0.groups()
+        fecha_t1, zone_1, rc_1, _ = m1.groups()
+        if zone_0 != zone_1 or rc_0 != rc_1:
+            raise DatasetError(
+                f"Cruce espacial entre zonas o distinto chip: {t0_name} -> {t1_name}"
+            )
+        chip_code = f"p{rc_0}"
+        return HuanucoPairMetadata(
+            t0_name=t0_name,
+            t1_name=t1_name,
+            zone_id=zone_0,
+            chip_code=chip_code,
+            chip_id=f"{zone_0}_{chip_code}",
+            fecha_t0=fecha_t0,
+            fecha_t1=fecha_t1,
+        )
+
+    fecha_t0 = t0_name[:10] if len(t0_name) >= 10 else ""
+    fecha_t1 = t1_name[:10] if len(t1_name) >= 10 else ""
+    zone_id = "00_carpish_referencia"
+    chip_code = "p00"
+    return HuanucoPairMetadata(
+        t0_name=t0_name,
+        t1_name=t1_name,
+        zone_id=zone_id,
+        chip_code=chip_code,
+        chip_id=f"{zone_id}_{chip_code}",
+        fecha_t0=fecha_t0,
+        fecha_t1=fecha_t1,
+    )
+
+
+def discover_huanuco_pairs(
+    sentinel2_root: str | Path = "data/raw/sentinel2",
+) -> list[tuple[str, str]]:
+    """Descubre los pares multitemporales (T0, T1) disponibles en ``sentinel2_root``.
+
+    Lee los pares explícitos de los catálogos curados
+    (``gee_huanuco_catalog.json`` y ``gee_huanuco_zonas_catalog.json``). Los pares
+    de las seis zonas se guardan como T0/T1 del mismo chip, de modo que nunca se
+    cruzan dos zonas o dos parches distintos. Si no hay ningún catálogo válido,
+    se conserva el emparejamiento consecutivo de respaldo.
+    """
+    import json
+
+    root = Path(sentinel2_root)
+    scenes = discover_sentinel2_scenes(root)
+    if len(scenes) < 2:
+        return []
+
+    scene_set = set(scenes)
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for catalog_name in ("gee_huanuco_catalog.json", "gee_huanuco_zonas_catalog.json"):
+        catalog_file = root / catalog_name
+        if not catalog_file.is_file():
+            continue
+        try:
+            data = json.loads(catalog_file.read_text(encoding="utf-8"))
+            for item in data.get("temporal_pairs", []):
+                if isinstance(item, list) and len(item) == 2:
+                    t0, t1 = str(item[0]), str(item[1])
+                    if t0 in scene_set and t1 in scene_set and (t0, t1) not in seen:
+                        pairs.append((t0, t1))
+                        seen.add((t0, t1))
+        except Exception:
+            continue
+
+    if pairs:
+        return pairs
+
+    # Respaldo únicamente si no hay catálogos utilizables.
+    for i in range(len(scenes) - 1):
+        t0, t1 = scenes[i], scenes[i + 1]
+        same_year = t0[:4] == t1[:4]
+        if (same_year or not pairs) and (t0, t1) not in seen:
+            pairs.append((t0, t1))
+            seen.add((t0, t1))
+
+    return pairs
+
+
+def split_huanuco_pairs(
+    pairs: Sequence[tuple[str, str]],
+    *,
+    val_fraction: float = 0.25,
+    val_zones: Sequence[str] | None = None,
+    seed: int = 42,
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Divide los pares de Huánuco en ``(train_pairs, val_pairs)`` sin fuga espacial.
+
+    Estrategia:
+    1. Si ``val_zones`` se especifica, separa zonas completas para validación
+       (holdout geográfico por zona) y deja el resto de zonas en entrenamiento.
+    2. Si ``val_zones`` es ``None``, realiza un muestreo estratificado por zona a nivel de
+       ``chip_id`` espacial: en cada zona con >=2 chips (las 6 zonas operativas con 16 chips
+       cada una), reserva ``val_fraction`` de sus chips (p. ej. 4 de 16 chips por zona =
+       24 chips independientes en total) para validación y los restantes para entrenamiento.
+       Las zonas de un único chip espacial (``00_carpish_referencia``) se asignan íntegras
+       a entrenamiento cuando existen zonas multi-chip para evitar que el mismo chip
+       espacial aparezca tanto en train como en validación.
+    """
+    if len(pairs) < 2:
+        raise DatasetError("Se necesitan al menos 2 pares de Huánuco para separar train/val.")
+    if not 0.0 < val_fraction < 1.0:
+        raise DatasetError("val_fraction debe estar entre 0 y 1.")
+
+    metas = [parse_huanuco_pair_metadata(t0, t1) for t0, t1 in pairs]
+    by_zone_chips: dict[str, dict[str, list[tuple[str, str]]]] = {}
+    for meta in metas:
+        by_zone_chips.setdefault(meta.zone_id, {}).setdefault(meta.chip_id, []).append(
+            (meta.t0_name, meta.t1_name)
+        )
+
+    train_pairs: list[tuple[str, str]] = []
+    val_pairs: list[tuple[str, str]] = []
+
+    if val_zones is not None:
+        requested = {z.strip() for z in val_zones if z.strip()}
+        if not requested:
+            raise DatasetError("val_zones no puede estar vacío si se especifica.")
+        missing = sorted(requested - set(by_zone_chips.keys()))
+        if missing:
+            raise DatasetError(
+                f"Zonas de validación Huánuco inexistentes: {missing}. "
+                f"Disponibles: {sorted(by_zone_chips.keys())}"
+            )
+        for zone_id in sorted(by_zone_chips.keys()):
+            target = val_pairs if zone_id in requested else train_pairs
+            for chip_id in sorted(by_zone_chips[zone_id].keys()):
+                target.extend(by_zone_chips[zone_id][chip_id])
+        if not train_pairs or not val_pairs:
+            raise DatasetError(
+                "El split por zonas de Huánuco debe dejar al menos un par en train y uno en val."
+            )
+        return train_pairs, val_pairs
+
+    multi_chip_zones = [z for z, chips in sorted(by_zone_chips.items()) if len(chips) >= 2]
+    single_chip_zones = [z for z, chips in sorted(by_zone_chips.items()) if len(chips) == 1]
+
+    if multi_chip_zones:
+        for zone_id in multi_chip_zones:
+            chip_ids = sorted(by_zone_chips[zone_id].keys())
+            n_val = max(1, int(round(len(chip_ids) * val_fraction)))
+            n_val = min(n_val, len(chip_ids) - 1)
+            shuffled = list(chip_ids)
+            random.Random(f"{seed}:{zone_id}").shuffle(shuffled)
+            val_chip_set = set(shuffled[:n_val])
+            for cid in chip_ids:
+                if cid in val_chip_set:
+                    val_pairs.extend(by_zone_chips[zone_id][cid])
+                else:
+                    train_pairs.extend(by_zone_chips[zone_id][cid])
+
+        # Zonas con 1 único chip espacial (ej. 00_carpish_referencia) van íntegras a train
+        # para no compartir huella espacial entre train y val.
+        for zone_id in single_chip_zones:
+            for cid in sorted(by_zone_chips[zone_id].keys()):
+                train_pairs.extend(by_zone_chips[zone_id][cid])
+    elif len(single_chip_zones) >= 2:
+        shuffled_zones = list(single_chip_zones)
+        random.Random(seed).shuffle(shuffled_zones)
+        n_val = max(1, min(len(shuffled_zones) - 1, int(round(len(shuffled_zones) * val_fraction))))
+        val_zset = set(shuffled_zones[:n_val])
+        for zone_id in single_chip_zones:
+            target = val_pairs if zone_id in val_zset else train_pairs
+            for cid in sorted(by_zone_chips[zone_id].keys()):
+                target.extend(by_zone_chips[zone_id][cid])
+    else:
+        # Caso de respaldo cuando solo existe 1 chip con múltiples pares temporales:
+        # se separa por fecha/escena sin compartir ninguna escena entre train y val.
+        only_zone = single_chip_zones[0]
+        only_chip = next(iter(by_zone_chips[only_zone].keys()))
+        all_p = list(by_zone_chips[only_zone][only_chip])
+        n_val = max(1, min(len(all_p) - 1, int(round(len(all_p) * val_fraction))))
+        val_candidate = all_p[-n_val:]
+        val_scenes = {s for p in val_candidate for s in p}
+        train_candidate = [p for p in all_p[:-n_val] if p[0] not in val_scenes and p[1] not in val_scenes]
+        if not train_candidate:
+            train_candidate = all_p[:-1]
+            val_candidate = [all_p[-1]]
+        train_pairs.extend(train_candidate)
+        val_pairs.extend(val_candidate)
+
+    return train_pairs, val_pairs
+
+
+def load_huanuco_pairs_subset(
+    pairs: Sequence[tuple[str, str]],
+    sentinel2_root: str | Path = "data/raw/sentinel2",
+    geobosques_shp: str | Path = "data/raw/geobosques/PNCB_ATD_UTM_01_273_S.shp",
+) -> list[tuple[str, str, np.ndarray, np.ndarray]]:
+    """Carga un subconjunto explícito de pares ``(t0_name, t1_name)`` de Huánuco."""
+    loaded: list[tuple[str, str, np.ndarray, np.ndarray]] = []
+    for t0_name, t1_name in pairs:
+        img, msk = load_huanuco_sentinel2_scene(
+            sentinel2_root=sentinel2_root,
+            geobosques_shp=geobosques_shp,
+            t0_name=t0_name,
+            t1_name=t1_name,
+        )
+        loaded.append((t0_name, t1_name, img, msk))
+    return loaded
+
+
+def load_all_huanuco_sentinel2_pairs(
+    sentinel2_root: str | Path = "data/raw/sentinel2",
+    geobosques_shp: str | Path = "data/raw/geobosques/PNCB_ATD_UTM_01_273_S.shp",
+) -> list[tuple[str, str, np.ndarray, np.ndarray]]:
+    """Carga todos los pares multitemporales de Huánuco disponibles en ``sentinel2_root``.
+
+    Returns:
+        Lista de tuplas ``(t0_name, t1_name, image_6ch, mask_hw)``.
+    """
+    pairs = discover_huanuco_pairs(sentinel2_root)
+    return load_huanuco_pairs_subset(
+        pairs,
+        sentinel2_root=sentinel2_root,
+        geobosques_shp=geobosques_shp,
+    )
+
 

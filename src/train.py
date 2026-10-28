@@ -1,73 +1,87 @@
-"""Entrenamiento real y adaptación de dominio de la U-Net (OSCD + Sentinel-2 Huánuco).
+"""Pipeline de entrenamiento para U-Net en GeoForest-AI Huánuco (Fase B / Producción).
 
-Este script entrena la arquitectura U-Net de 6 canales con:
-1. Pares multitemporales reales Sentinel-2 y máscaras de cambio de OSCD (`data/raw/oscd`).
-2. Escenas multitemporales reales Sentinel-2 L2A de Huánuco (`data/raw/sentinel2`,
-   2024-07-18 vs 2024-09-11) acopladas con alertas oficiales ATD de Geobosques (MINAM)
-   y pérdida severa de dosel/quema (ΔNDVI y ΔNBR).
-3. Función de pérdida asimétrica `FocalTverskyLoss` (alpha=0.3, beta=0.7, gamma=1.333)
-   para penalizar masivamente los Falsos Negativos bajo desbalance severo (<4% positivos).
-4. Calibración post-entrenamiento mediante Temperature Scaling (T > 1.0) minimizando
-   la NLL en validación para mitigar sobreconfianza y reducir ECE / MCE.
-5. Despliegue automático del mejor modelo hacia `models/unet_best.pth`,
-   `models/unet_geoforest.onnx`, `models/calibration.json`, `models/manifest.json`
-   y `models/training_metrics.json`.
-
-Uso rápido:
-    python src/train.py --dry-run
-    python src/train.py --epochs 12 --batch-size 4 --samples-per-epoch 256 --resume auto
+Resuelve el desbalance extremo de clases mediante:
+1. Muestreo ponderado (WeightedRandomSampler) aplicado estrictamente en train_loader.
+2. val_loader determinista sin sampler (shuffle=False) sobre la distribución real.
+3. Optimización con FocalDiceLoss directamente sobre logits sin sigmoid previa.
+4. Optimizador AdamW (lr=1e-4, weight_decay=1e-4) y CosineAnnealingLR (50 épocas).
+5. Monitoreo estricto de val_iou (IoU clase 1 deforestación) para Early Stopping (paciencia=12),
+   selección de checkpoint en models/unet_best.pth, saneamiento de trazabilidad en
+   models/training_metrics.json y actualización de hashes SHA-256 en models/manifest.json.
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import hashlib
 import json
+import logging
+import os
 import random
-import shutil
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
+# Agregar ruta raíz del proyecto
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.dataset import (  # noqa: E402
-    CANALES,
-    DatasetError,
-    OSCDChangeDataset,
-    discover_oscd_cities,
-    load_huanuco_sentinel2_scene,
-    split_cities,
-)
-from src.infer import calibration_errors, fit_temperature  # noqa: E402
-from src.unet import UNet, export_unet_to_onnx  # noqa: E402
+from src.data.dataset import GeoForestDataset
+from src.models.loss import FocalDiceLoss
+from src.unet import UNet
+
+log = logging.getLogger(__name__)
 
 
+def compute_sha256(path: str | Path) -> str:
+    """Calcula el hash SHA-256 criptográfico de un archivo en disco."""
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def update_manifest_hashes(
+    manifest_path: str | Path = "models/manifest.json",
+    checkpoint_path: str | Path = "models/unet_best.pth",
+    onnx_path: str | Path = "models/unet_geoforest.onnx",
+) -> dict[str, str]:
+    """Actualiza models/manifest.json con los hashes SHA-256 reales de los artefactos en disco."""
+    manifest_file = Path(manifest_path)
+    manifest_file.parent.mkdir(parents=True, exist_ok=True)
+    record: dict[str, str] = {}
+    if manifest_file.exists():
+        try:
+            record = json.loads(manifest_file.read_text(encoding="utf-8"))
+        except Exception:
+            record = {}
+
+    ckpt_p = Path(checkpoint_path)
+    onnx_p = Path(onnx_path)
+    if ckpt_p.exists():
+        record["models/unet_best.pth"] = compute_sha256(ckpt_p)
+    if onnx_p.exists():
+        record["models/unet_geoforest.onnx"] = compute_sha256(onnx_p)
+
+    manifest_file.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return record
+
+
+# ---------------------------------------------------------------------------
+# Compatibilidad retroactiva con módulos y pruebas existentes
+# ---------------------------------------------------------------------------
 class FocalTverskyLoss(nn.Module):
-    """Focal Tversky Loss para desbalance severo de clases (<4% píxeles de cambio).
-
-    Referencia: Abraham & Khan (2019), 'A Novel Focal Tversky Loss Function with
-    Improved Attention U-Net for Lesion Segmentation'.
-
-    TI = (TP + smooth) / (TP + alpha * FP + beta * FN + smooth)
-    Loss = (1 - TI) ** gamma
-
-    Con beta > alpha (por defecto alpha=0.3, beta=0.7), se penalizan fuertemente
-    los Falsos Negativos para forzar alto Recall sobre frentes finos de deforestación
-    y trochas madereras. El exponente gamma (>1) atenúa el gradiente de píxeles
-    fáciles de fondo, concentrándose en los bordes y transiciones difíciles.
-    """
+    """Focal Tversky Loss conservada para retrocompatibilidad."""
 
     def __init__(
         self,
@@ -75,6 +89,8 @@ class FocalTverskyLoss(nn.Module):
         beta: float = 0.7,
         gamma: float = 1.333,
         smooth: float = 1.0,
+        bce_weight: float = 0.0,
+        label_smoothing: float = 0.0,
     ) -> None:
         super().__init__()
         if alpha + beta <= 0:
@@ -83,6 +99,8 @@ class FocalTverskyLoss(nn.Module):
         self.beta = float(beta)
         self.gamma = float(gamma)
         self.smooth = float(smooth)
+        self.bce_weight = float(bce_weight)
+        self.label_smoothing = float(label_smoothing)
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         probs = torch.sigmoid(logits)
@@ -94,207 +112,123 @@ class FocalTverskyLoss(nn.Module):
         fn = ((1.0 - probs_flat) * targets_flat).sum(dim=1)
 
         tversky = (tp + self.smooth) / (tp + self.alpha * fp + self.beta * fn + self.smooth)
-        focal_tversky = torch.pow(torch.clamp(1.0 - tversky, min=1e-7, max=1.0), self.gamma)
-        return focal_tversky.mean()
+        focal_tversky = torch.pow(torch.clamp(1.0 - tversky, min=1e-7, max=1.0), self.gamma).mean()
+
+        if self.bce_weight > 0.0:
+            if self.label_smoothing > 0.0:
+                smoothed = targets * (1.0 - self.label_smoothing) + 0.5 * self.label_smoothing
+            else:
+                smoothed = targets
+            bce = F.binary_cross_entropy_with_logits(logits, smoothed)
+            return (1.0 - self.bce_weight) * focal_tversky + self.bce_weight * bce
+
+        return focal_tversky
 
 
-# Alias retrocompatible
 BCEDiceLoss = FocalTverskyLoss
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Entrena y despliega la U-Net con pares Sentinel-2 (OSCD + Huánuco)."
-    )
-    parser.add_argument("--data-root", default="data/raw/oscd", help="Raíz del dataset OSCD.")
-    parser.add_argument(
-        "--sentinel2-root",
-        default="data/raw/sentinel2",
-        help="Raíz de escenas Sentinel-2 L2A de Huánuco.",
-    )
-    parser.add_argument("--output-dir", default="models", help="Directorio de artefactos.")
-    parser.add_argument("--epochs", type=int, default=12, help="Épocas máximas.")
-    parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--samples-per-epoch", type=int, default=256)
-    parser.add_argument("--patch-size", type=int, default=256)
-    parser.add_argument("--base-features", type=int, default=32)
-    parser.add_argument("--lr", type=float, default=1.5e-4)
-    parser.add_argument("--weight-decay", type=float, default=1e-4)
-    parser.add_argument("--positive-fraction", type=float, default=0.6)
-    parser.add_argument("--max-pos-weight", type=float, default=12.0)
-    parser.add_argument(
-        "--alpha",
-        type=float,
-        default=0.3,
-        help="Penalización de Falsos Positivos en FocalTverskyLoss (defecto 0.3).",
-    )
-    parser.add_argument(
-        "--beta",
-        type=float,
-        default=0.7,
-        help="Penalización de Falsos Negativos en FocalTverskyLoss (defecto 0.7; beta > alpha prioriza Recall).",
-    )
-    parser.add_argument(
-        "--gamma",
-        type=float,
-        default=1.333,
-        help="Exponente focal en FocalTverskyLoss (defecto 1.333; atenúa ejemplos fáciles).",
-    )
-    parser.add_argument("--val-fraction", type=float, default=0.2)
-    parser.add_argument("--val-cities", default=None, help="Lista separada por comas.")
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--patience", type=int, default=6)
-    parser.add_argument("--threshold", type=float, default=0.5)
-    parser.add_argument("--opset", type=int, default=17)
-    parser.add_argument("--device", default="auto", help="auto, cpu o cuda.")
-    parser.add_argument(
-        "--resume",
-        default="auto",
-        help="Ruta a checkpoint .pth previo para warm-start, 'auto' o 'none'.",
-    )
-    parser.add_argument("--no-huanuco", action="store_true", help="Desactiva adaptación con escena Huánuco.")
-    parser.add_argument("--no-deploy", action="store_true", help="No actualiza models/unet_geoforest.onnx.")
-    parser.add_argument("--no-augment", action="store_true")
-    parser.add_argument("--dry-run", action="store_true", help="Solo valida dataset y split.")
-    return parser.parse_args()
+def resolve_training_device(requested_device: str = "auto", require_gpu: bool = False) -> torch.device:
+    """Selecciona y optimiza el dispositivo de entrenamiento priorizando GPU CUDA si existe."""
+    req = (requested_device or "auto").strip().lower()
+    if req in ("auto", "gpu"):
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            device = torch.device("mps")
+        else:
+            if require_gpu:
+                raise RuntimeError("Se solicitó --require-gpu pero torch.cuda.is_available() es False.")
+            device = torch.device("cpu")
+    elif req.startswith("cuda"):
+        if not torch.cuda.is_available():
+            if require_gpu:
+                raise RuntimeError("Se solicitó dispositivo CUDA pero no está disponible.")
+            device = torch.device("cpu")
+        else:
+            device = torch.device(req)
+    else:
+        if require_gpu:
+            raise RuntimeError(f"Se solicitó --require-gpu pero el dispositivo es '{req}'.")
+        device = torch.device(req)
+
+    if device.type == "cuda":
+        torch.backends.cudnn.enabled = True
+        torch.backends.cudnn.benchmark = True
+        if hasattr(torch.backends.cuda, "matmul"):
+            torch.backends.cuda.matmul.allow_tf32 = True
+        if hasattr(torch.backends.cudnn, "allow_tf32"):
+            torch.backends.cudnn.allow_tf32 = True
+        torch.set_num_threads(2)
+        torch.cuda.empty_cache()
+
+    return device
 
 
 def seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
-def _safe_div(numerator: float, denominator: float) -> float:
-    return float(numerator / denominator) if denominator else 0.0
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _unique_path(path: Path) -> Path:
-    if not path.exists():
-        return path
-    for index in range(1, 10_000):
-        candidate = path.with_name(f"{path.stem}_{index}{path.suffix}")
-        if not candidate.exists():
-            return candidate
-    raise RuntimeError(f"No se pudo encontrar un nombre libre para {path}")
-
-
-def _binary_metrics(
-    predictions: torch.Tensor,
-    targets: torch.Tensor,
-) -> tuple[int, int, int, int]:
-    pred = predictions.bool()
-    target = targets.bool()
-    tp = int((pred & target).sum().item())
-    fp = int((pred & ~target).sum().item())
-    fn = int((~pred & target).sum().item())
-    tn = int((~pred & ~target).sum().item())
-    return tp, fp, fn, tn
-
-
-def _sample_huanuco_batches(
-    hco_image: np.ndarray,
-    hco_mask: np.ndarray,
-    rng: random.Random,
-    batch_size: int = 4,
-    num_batches_256: int = 6,
-    num_batches_128: int = 8,
-) -> list[tuple[torch.Tensor, torch.Tensor]]:
-    """Genera lotes multiescala (256x256 y 128x128) con aumentos geométricos sobre Huánuco."""
-    batches: list[tuple[torch.Tensor, torch.Tensor]] = []
-
-    def _aug(img: np.ndarray, msk: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        if rng.random() < 0.5:
-            img = img[:, :, ::-1]
-            msk = msk[:, ::-1]
-        if rng.random() < 0.5:
-            img = img[:, ::-1, :]
-            msk = msk[::-1, :]
-        k = rng.randint(0, 3)
-        if k > 0:
-            img = np.rot90(img, k=k, axes=(1, 2))
-            msk = np.rot90(msk, k=k, axes=(0, 1))
-        return np.ascontiguousarray(img), np.ascontiguousarray(msk)
-
-    # Lotes 256x256
-    for _ in range(num_batches_256):
-        imgs, msks = [], []
-        for _ in range(batch_size):
-            im_a, ms_a = _aug(hco_image, hco_mask)
-            imgs.append(torch.from_numpy(im_a).float())
-            msks.append(torch.from_numpy(ms_a).float().unsqueeze(0))
-        batches.append((torch.stack(imgs, dim=0), torch.stack(msks, dim=0)))
-
-    # Lotes 128x128 (incluyendo explícitamente Carpish TL y Huallaga BR)
-    fixed_crops = [(0, 0), (128, 128), (0, 128), (128, 0), (64, 64)]
-    for _ in range(num_batches_128):
-        imgs, msks = [], []
-        for b_idx in range(batch_size):
-            if b_idx < len(fixed_crops) and rng.random() < 0.7:
-                r0, c0 = fixed_crops[b_idx % len(fixed_crops)]
-            else:
-                r0 = rng.randint(0, hco_image.shape[1] - 128)
-                c0 = rng.randint(0, hco_image.shape[2] - 128)
-            sub_img = hco_image[:, r0 : r0 + 128, c0 : c0 + 128]
-            sub_msk = hco_mask[r0 : r0 + 128, c0 : c0 + 128]
-            im_a, ms_a = _aug(sub_img, sub_msk)
-            imgs.append(torch.from_numpy(im_a).float())
-            msks.append(torch.from_numpy(ms_a).float().unsqueeze(0))
-        batches.append((torch.stack(imgs, dim=0), torch.stack(msks, dim=0)))
-
-    return batches
-
-
-def train_one_epoch(
+# ---------------------------------------------------------------------------
+# Bucle de validación vectorizado
+# ---------------------------------------------------------------------------
+def evaluate_epoch(
     model: nn.Module,
-    loader: DataLoader,
-    optimizer: optim.Optimizer,
+    val_loader: DataLoader,
     criterion: nn.Module,
     device: torch.device,
-    extra_batches: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
-) -> float:
-    model.train()
-    total_loss = 0.0
-    batches = 0
+    threshold: float = 0.5,
+    eps: float = 1e-6,
+) -> tuple[float, float, float]:
+    """Evalúa el modelo sobre la partición de validación sin sampler.
 
-    for images, masks in loader:
-        images = images.to(device, non_blocking=True)
-        masks = masks.to(device, non_blocking=True)
+    Calcula de forma vectorizada IoU y F1 sobre la clase 1 (deforestación).
 
-        optimizer.zero_grad(set_to_none=True)
-        logits = model(images)
-        loss = criterion(logits, masks)
-        loss.backward()
-        optimizer.step()
+    Returns:
+        tuple[val_loss, val_iou, val_f1]
+    """
+    model.eval()
+    total_val_loss = 0.0
+    num_batches = 0
 
-        total_loss += float(loss.item())
-        batches += 1
+    total_tp = 0.0
+    total_fp = 0.0
+    total_fn = 0.0
 
-    if extra_batches:
-        for images, masks in extra_batches:
+    with torch.no_grad():
+        for images, masks in val_loader:
             images = images.to(device, non_blocking=True)
             masks = masks.to(device, non_blocking=True)
 
-            optimizer.zero_grad(set_to_none=True)
             logits = model(images)
             loss = criterion(logits, masks)
-            loss.backward()
-            optimizer.step()
+            total_val_loss += float(loss.item())
+            num_batches += 1
 
-            total_loss += float(loss.item())
-            batches += 1
+            probs = torch.sigmoid(logits)
+            preds = (probs >= threshold).float()
 
-    return total_loss / batches if batches else float("nan")
+            tp = float((preds * masks).sum().item())
+            fp = float((preds * (1.0 - masks)).sum().item())
+            fn = float(((1.0 - preds) * masks).sum().item())
+
+            total_tp += tp
+            total_fp += fp
+            total_fn += fn
+
+    avg_val_loss = total_val_loss / max(num_batches, 1)
+    val_iou = (total_tp + eps) / (total_tp + total_fp + total_fn + eps)
+    val_f1 = (2.0 * total_tp + eps) / (2.0 * total_tp + total_fp + total_fn + eps)
+
+    return avg_val_loss, val_iou, val_f1
+
+
+def _safe_div(num: float, den: float) -> float:
+    return float(num / den) if den else 0.0
 
 
 @torch.no_grad()
@@ -303,9 +237,13 @@ def evaluate(
     loader: DataLoader,
     criterion: nn.Module,
     device: torch.device,
-    threshold: float,
-    hco_pair: tuple[np.ndarray, np.ndarray] | None = None,
-) -> dict[str, float]:
+    threshold: float = 0.5,
+    val_hco_pairs: list[tuple[str, str, np.ndarray, np.ndarray]] | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Función evaluate completa con desglose opcional por zonas de Huánuco."""
+    from src.dataset import parse_huanuco_pair_metadata
+
     model.eval()
     total_loss = 0.0
     batches = 0
@@ -314,29 +252,27 @@ def evaluate(
     for images, masks in loader:
         images = images.to(device, non_blocking=True)
         masks = masks.to(device, non_blocking=True)
-
         logits = model(images)
         loss = criterion(logits, masks)
         total_loss += float(loss.item())
         batches += 1
 
-        probabilities = torch.sigmoid(logits)
-        batch_tp, batch_fp, batch_fn, batch_tn = _binary_metrics(
-            probabilities >= threshold, masks >= 0.5
-        )
-        tp += batch_tp
-        fp += batch_fp
-        fn += batch_fn
-        tn += batch_tn
+        probs = torch.sigmoid(logits)
+        pred = probs >= threshold
+        tgt = masks >= 0.5
+        tp += int((pred & tgt).sum().item())
+        fp += int((pred & ~tgt).sum().item())
+        fn += int((~pred & tgt).sum().item())
+        tn += int((~pred & ~tgt).sum().item())
 
+    iou = _safe_div(tp, tp + fp + fn)
+    f1 = _safe_div(2 * tp, 2 * tp + fp + fn)
     precision = _safe_div(tp, tp + fp)
     recall = _safe_div(tp, tp + fn)
-    f1 = _safe_div(2 * tp, 2 * tp + fp + fn)
-    iou = _safe_div(tp, tp + fp + fn)
     accuracy = _safe_div(tp + tn, tp + tn + fp + fn)
 
-    result = {
-        "loss": total_loss / batches if batches else float("nan"),
+    result: dict[str, Any] = {
+        "loss": total_loss / max(batches, 1),
         "iou": iou,
         "f1": f1,
         "precision": precision,
@@ -348,506 +284,432 @@ def evaluate(
         "tn": float(tn),
     }
 
-    if hco_pair is not None:
-        h_img, h_msk = hco_pair
+    if val_hco_pairs:
+        zone_acc: dict[str, dict[str, int]] = {}
         h_tp = h_fp = h_fn = h_tn = 0
-        for sl in (
-            (slice(None), slice(None)),
-            (slice(0, 128), slice(0, 128)),
-            (slice(128, 256), slice(128, 256)),
-        ):
-            inp = torch.from_numpy(h_img[:, sl[0], sl[1]]).unsqueeze(0).float().to(device)
-            tgt = torch.from_numpy(h_msk[sl[0], sl[1]]).unsqueeze(0).unsqueeze(0).float().to(device)
-            prob = torch.sigmoid(model(inp))
-            btp, bfp, bfn, btn = _binary_metrics(prob >= threshold, tgt >= 0.5)
+        for t0_n, t1_n, h_img, h_msk in val_hco_pairs:
+            meta = parse_huanuco_pair_metadata(t0_n, t1_n)
+            inp = torch.from_numpy(h_img).unsqueeze(0).float().to(device)
+            tgt_t = torch.from_numpy(h_msk).unsqueeze(0).unsqueeze(0).float().to(device) >= 0.5
+            prb_t = torch.sigmoid(model(inp)) >= threshold
+
+            btp = int((prb_t & tgt_t).sum().item())
+            bfp = int((prb_t & ~tgt_t).sum().item())
+            bfn = int((~prb_t & tgt_t).sum().item())
+            btn = int((~prb_t & ~tgt_t).sum().item())
+
             h_tp += btp
             h_fp += bfp
             h_fn += bfn
             h_tn += btn
+
+            z_entry = zone_acc.setdefault(
+                meta.zone_id, {"n_chips": 0, "tp": 0, "fp": 0, "fn": 0, "tn": 0}
+            )
+            z_entry["n_chips"] += 1
+            z_entry["tp"] += btp
+            z_entry["fp"] += bfp
+            z_entry["fn"] += bfn
+            z_entry["tn"] += btn
+
+        zones_report: dict[str, dict[str, Any]] = {}
+        for zid, zc in sorted(zone_acc.items()):
+            z_iou = _safe_div(zc["tp"], zc["tp"] + zc["fp"] + zc["fn"])
+            z_f1 = _safe_div(2 * zc["tp"], 2 * zc["tp"] + zc["fp"] + zc["fn"])
+            z_prec = _safe_div(zc["tp"], zc["tp"] + zc["fp"])
+            z_rec = _safe_div(zc["tp"], zc["tp"] + zc["fn"])
+            zones_report[zid] = {
+                "n_chips": zc["n_chips"],
+                "iou": round(z_iou, 6),
+                "f1": round(z_f1, 6),
+                "precision": round(z_prec, 6),
+                "recall": round(z_rec, 6),
+                "tp": zc["tp"],
+                "fp": zc["fp"],
+                "fn": zc["fn"],
+                "tn": zc["tn"],
+            }
+
+        macro_iou = float(np.mean([v["iou"] for v in zones_report.values()])) if zones_report else 0.0
+        macro_f1 = float(np.mean([v["f1"] for v in zones_report.values()])) if zones_report else 0.0
         result["huanuco_iou"] = _safe_div(h_tp, h_tp + h_fp + h_fn)
         result["huanuco_f1"] = _safe_div(2 * h_tp, 2 * h_tp + h_fp + h_fn)
         result["huanuco_precision"] = _safe_div(h_tp, h_tp + h_fp)
         result["huanuco_recall"] = _safe_div(h_tp, h_tp + h_fn)
+        result["huanuco_val_chips_count"] = len(val_hco_pairs)
+        result["huanuco_zones"] = zones_report
+        result["huanuco_macro_zone_iou"] = macro_iou
+        result["huanuco_macro_zone_f1"] = macro_f1
         result["combined_score"] = 0.5 * iou + 0.5 * result["huanuco_iou"]
-    else:
-        result["huanuco_iou"] = iou
-        result["huanuco_f1"] = f1
-        result["huanuco_precision"] = precision
-        result["huanuco_recall"] = recall
-        result["combined_score"] = iou
 
     return result
 
 
-def _parse_cities(raw: str | None) -> list[str] | None:
-    if not raw:
-        return None
-    return [item.strip() for item in raw.split(",") if item.strip()]
+# ---------------------------------------------------------------------------
+# Pipeline Principal de Entrenamiento (Fase B / Producción)
+# ---------------------------------------------------------------------------
+def train_pipeline(
+    train_dataset: GeoForestDataset,
+    val_dataset: GeoForestDataset,
+    epochs: int = 50,
+    batch_size: int = 16,
+    lr: float = 1e-4,
+    weight_decay: float = 1e-4,
+    patience: int = 12,
+    device: str | torch.device | None = None,
+    checkpoint_path: str | Path = "models/unet_best.pth",
+    metrics_path: str | Path = "models/training_metrics.json",
+    num_workers: int = 4,
+    pin_memory: bool = True,
+    base_features: int = 32,
+    dropout: float = 0.15,
+    target_pos_ratio: float = 0.5,
+    alpha: float = 0.25,
+    gamma: float = 2.0,
+    lambda_focal: float = 1.0,
+    lambda_dice: float = 1.0,
+    eps: float = 1e-6,
+) -> dict[str, Any]:
+    """Ejecuta el pipeline completo de entrenamiento y validación de la Fase B."""
+    dev = resolve_training_device(str(device) if device is not None else "auto")
+    use_pin = pin_memory and dev.type == "cuda"
+    nw = int(num_workers)
 
-
-def _find_warm_start_checkpoint(output_dir: Path, resume_arg: str, base_features: int) -> Path | None:
-    if not resume_arg or resume_arg.lower() == "none":
-        return None
-    if resume_arg.lower() != "auto":
-        p = Path(resume_arg)
-        return p if p.is_file() else None
-
-    candidates = sorted(
-        output_dir.glob("unet_oscd_change_best_*.pth"),
-        key=lambda x: x.stat().st_mtime,
-        reverse=True,
-    )
-    best_default = output_dir / "unet_best.pth"
-    if best_default.is_file():
-        candidates.insert(0, best_default)
-
-    for cand in candidates:
-        try:
-            sd = torch.load(cand, map_location="cpu", weights_only=True)
-            w = sd.get("inc.double_conv.0.weight")
-            if w is not None and tuple(w.shape) == (base_features, 6, 3, 3):
-                return cand
-        except Exception:
-            continue
-    return None
-
-
-def main() -> int:
-    args = parse_args()
-    seed_everything(args.seed)
-
-    data_root = Path(args.data_root).resolve()
-    output_dir = Path(args.output_dir).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    try:
-        all_cities = discover_oscd_cities(data_root)
-    except DatasetError as exc:
-        print(f"❌ {exc}", flush=True)
-        return 2
-
-    requested_val = _parse_cities(args.val_cities)
-    if requested_val is not None:
-        missing = sorted(set(requested_val) - set(all_cities))
-        if missing:
-            print(f"❌ Ciudades de validación inexistentes: {missing}", flush=True)
-            return 2
-        val_cities = sorted(set(requested_val))
-        train_cities = sorted(set(all_cities) - set(val_cities))
-    else:
-        train_cities, val_cities = split_cities(
-            all_cities, val_fraction=args.val_fraction, seed=args.seed
-        )
-
-    if not train_cities or not val_cities:
-        print("❌ El split debe dejar al menos una ciudad en train y una en val.", flush=True)
-        return 2
-
-    print(f"Dataset OSCD: {data_root}", flush=True)
-    print(f"Ciudades disponibles ({len(all_cities)}): {', '.join(all_cities)}", flush=True)
-    print(f"Train ({len(train_cities)}): {', '.join(train_cities)}", flush=True)
-    print(f"Val   ({len(val_cities)}): {', '.join(val_cities)}", flush=True)
-
-    try:
-        train_ds = OSCDChangeDataset(
-            data_root,
-            cities=train_cities,
-            patch_size=args.patch_size,
-            train=True,
-            samples_per_epoch=args.samples_per_epoch,
-            positive_fraction=args.positive_fraction,
-            seed=args.seed,
-            augment=not args.no_augment,
-        )
-        val_ds = OSCDChangeDataset(
-            data_root,
-            cities=val_cities,
-            patch_size=args.patch_size,
-            train=False,
-            seed=args.seed,
-            augment=False,
-        )
-    except DatasetError as exc:
-        print(f"❌ {exc}", flush=True)
-        return 2
-
-    hco_pair: tuple[np.ndarray, np.ndarray] | None = None
-    if not args.no_huanuco:
-        try:
-            hco_pair = load_huanuco_sentinel2_scene(args.sentinel2_root)
-            print(
-                f"Escena Sentinel-2 Huánuco cargada: {hco_pair[0].shape} | "
-                f"píxeles cambio/deforestación: {int(hco_pair[1].sum())} ({hco_pair[1].mean():.2%})",
-                flush=True,
-            )
-        except Exception as exc:
-            print(f"⚠️ No se pudo cargar escena Huánuco ({exc}); entrenando solo con OSCD.", flush=True)
-
-    train_change_fraction = train_ds.change_fraction()
-    val_change_fraction = val_ds.change_fraction()
-    print(
-        f"Parches train/época: {len(train_ds)} | parches val: {len(val_ds)} | "
-        f"cambio train: {train_change_fraction:.4%} | cambio val: {val_change_fraction:.4%}",
-        flush=True,
-    )
-
-    if args.dry_run:
-        image, mask = train_ds[0]
-        print(
-            f"Dry-run OK: imagen={tuple(image.shape)} máscara={tuple(mask.shape)} "
-            f"canales={list(CANALES)}",
-            flush=True,
-        )
-        return 0
-
-    device = torch.device(
-        args.device
-        if args.device != "auto"
-        else ("cuda" if torch.cuda.is_available() else "cpu")
-    )
-    if device.type == "cuda":
-        print(f"GPU: {torch.cuda.get_device_name(0)}", flush=True)
-    else:
-        torch.set_num_threads(min(12, max(4, (torch.get_num_threads() or 8))))
-        print(f"Dispositivo: CPU ({torch.get_num_threads()} hilos)", flush=True)
-
+    # 1. Configuración obligatoria del WeightedRandomSampler en train_loader
+    weights = train_dataset.get_sampler_weights(target_pos_ratio=target_pos_ratio)
+    sampler = WeightedRandomSampler(weights=weights, num_samples=len(weights), replacement=True)
     train_loader = DataLoader(
-        train_ds,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=device.type == "cuda",
-        drop_last=False,
+        train_dataset,
+        batch_size=batch_size,
+        sampler=sampler,
+        num_workers=nw,
+        pin_memory=use_pin,
     )
+
+    # 2. Configuración obligatoria de val_loader: SIN sampler, shuffle=False (distribución real)
     val_loader = DataLoader(
-        val_ds,
-        batch_size=args.batch_size,
+        val_dataset,
+        batch_size=batch_size,
         shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=device.type == "cuda",
-        drop_last=False,
+        num_workers=nw,
+        pin_memory=use_pin,
     )
 
+    sample_img, _ = train_dataset[0]
+    in_channels = int(sample_img.shape[0])
+
+    # 3. Inicialización del modelo U-Net (base_features=32, FP32)
     model = UNet(
-        in_channels=6,
+        in_channels=in_channels,
         num_classes=1,
-        base_features=args.base_features,
-    ).to(device)
+        base_features=base_features,
+        bilinear=True,
+        dropout=dropout,
+    ).to(dev)
 
-    warm_ckpt = _find_warm_start_checkpoint(output_dir, args.resume, args.base_features)
-    if warm_ckpt is not None:
-        print(f"🔥 Warm-start desde checkpoint previo: {warm_ckpt.name}", flush=True)
-        model.load_state_dict(torch.load(warm_ckpt, map_location=device, weights_only=True))
+    # 4. Función de pérdida híbrida FocalDiceLoss sobre logits crudos
+    criterion = FocalDiceLoss(
+        alpha=alpha,
+        gamma=gamma,
+        lambda_focal=lambda_focal,
+        lambda_dice=lambda_dice,
+        eps=eps,
+    )
 
-    pos_weight_value = (
-        min(
-            args.max_pos_weight,
-            max(1.0, (1.0 - train_change_fraction) / max(train_change_fraction, 1e-6)),
+    # 5. Optimizador AdamW y Scheduler CosineAnnealingLR
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
+
+    # 6. Variables de seguimiento y Early Stopping
+    best_val_iou = -1.0
+    best_val_f1 = -1.0
+    best_val_loss = float("inf")
+    best_epoch = -1
+    epochs_no_improve = 0
+    history: list[dict[str, Any]] = []
+
+    checkpoint_file = Path(checkpoint_path)
+    checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
+    metrics_file = Path(metrics_path)
+    metrics_file.parent.mkdir(parents=True, exist_ok=True)
+
+    log.info(
+        "Iniciando entrenamiento: %d épocas, batch_size=%d, in_channels=%d, base_features=%d, dispositivo=%s",
+        epochs,
+        batch_size,
+        in_channels,
+        base_features,
+        dev,
+    )
+
+    for epoch in range(1, epochs + 1):
+        model.train()
+        running_train_loss = 0.0
+        train_batches = 0
+
+        for images, masks in train_loader:
+            images = images.to(dev, non_blocking=True)
+            masks = masks.to(dev, non_blocking=True)
+
+            optimizer.zero_grad()
+            logits = model(images)
+            loss = criterion(logits, masks)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+
+            running_train_loss += float(loss.item())
+            train_batches += 1
+
+        scheduler.step()
+        train_loss = running_train_loss / max(train_batches, 1)
+
+        # Validación sobre distribución real
+        val_loss, val_iou, val_f1 = evaluate_epoch(model, val_loader, criterion, dev, eps=eps)
+        current_lr = float(optimizer.param_groups[0]["lr"])
+
+        epoch_record = {
+            "epoch": epoch,
+            "train_loss": round(train_loss, 5),
+            "val_loss": round(val_loss, 5),
+            "val_iou": round(val_iou, 5),
+            "val_f1": round(val_f1, 5),
+            "lr": current_lr,
+        }
+        history.append(epoch_record)
+
+        log.info(
+            "Época [%3d/%3d] Train Loss: %.4f | Val Loss: %.4f | Val IoU: %.4f | Val F1: %.4f",
+            epoch,
+            epochs,
+            train_loss,
+            val_loss,
+            val_iou,
+            val_f1,
         )
-        if train_change_fraction > 0
-        else 1.0
-    )
-    criterion = FocalTverskyLoss(alpha=args.alpha, beta=args.beta, gamma=args.gamma)
-    optimizer = optim.AdamW(
-        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
-    )
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="max", factor=0.5, patience=2, min_lr=1e-6
-    )
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    best_path = _unique_path(output_dir / f"unet_oscd_change_best_{timestamp}.pth")
-    best_meta_path = _unique_path(output_dir / f"unet_oscd_change_best_{timestamp}.json")
-    history_path = _unique_path(output_dir / f"unet_oscd_change_history_{timestamp}.csv")
+        # Criterio estricto de selección de Checkpoint: val_iou de clase 1
+        if val_iou > best_val_iou:
+            best_val_iou = val_iou
+            best_val_f1 = val_f1
+            best_val_loss = val_loss
+            best_epoch = epoch
+            epochs_no_improve = 0
 
-    print(
-        f"Loss: FocalTverskyLoss (alpha={args.alpha}, beta={args.beta}, gamma={args.gamma})",
-        flush=True,
-    )
-    print(f"Checkpoint: {best_path}", flush=True)
-    print(f"Historial: {history_path}", flush=True)
-
-    best_score = -1.0
-    best_epoch = 0
-    best_metrics: dict[str, float] = {}
-    epochs_without_improvement = 0
-    rng_hco = random.Random(args.seed + 99)
-
-    with history_path.open("w", newline="", encoding="utf-8") as history_file:
-        writer = csv.DictWriter(
-            history_file,
-            fieldnames=[
-                "epoch",
-                "train_loss",
-                "val_loss",
-                "val_iou",
-                "val_f1",
-                "val_precision",
-                "val_recall",
-                "val_accuracy",
-                "huanuco_iou",
-                "huanuco_f1",
-                "huanuco_precision",
-                "huanuco_recall",
-                "combined_score",
-                "lr",
-            ],
-        )
-        writer.writeheader()
-
-        for epoch in range(1, args.epochs + 1):
-            started = time.perf_counter()
-            extra_batches = (
-                _sample_huanuco_batches(
-                    hco_pair[0],
-                    hco_pair[1],
-                    rng=rng_hco,
-                    batch_size=args.batch_size,
-                    num_batches_256=6,
-                    num_batches_128=8,
-                )
-                if hco_pair is not None
-                else None
-            )
-            train_loss = train_one_epoch(
-                model,
-                train_loader,
-                optimizer,
-                criterion,
-                device,
-                extra_batches=extra_batches,
-            )
-            metrics = evaluate(
-                model,
-                val_loader,
-                criterion,
-                device,
-                threshold=args.threshold,
-                hco_pair=hco_pair,
-            )
-            elapsed = time.perf_counter() - started
-            current_lr = float(optimizer.param_groups[0]["lr"])
-
-            writer.writerow(
-                {
-                    "epoch": epoch,
-                    "train_loss": f"{train_loss:.6f}",
-                    "val_loss": f"{metrics['loss']:.6f}",
-                    "val_iou": f"{metrics['iou']:.6f}",
-                    "val_f1": f"{metrics['f1']:.6f}",
-                    "val_precision": f"{metrics['precision']:.6f}",
-                    "val_recall": f"{metrics['recall']:.6f}",
-                    "val_accuracy": f"{metrics['accuracy']:.6f}",
-                    "huanuco_iou": f"{metrics['huanuco_iou']:.6f}",
-                    "huanuco_f1": f"{metrics['huanuco_f1']:.6f}",
-                    "huanuco_precision": f"{metrics['huanuco_precision']:.6f}",
-                    "huanuco_recall": f"{metrics['huanuco_recall']:.6f}",
-                    "combined_score": f"{metrics['combined_score']:.6f}",
-                    "lr": f"{current_lr:.8f}",
-                }
-            )
-            history_file.flush()
-
-            print(
-                f"Época [{epoch:02d}/{args.epochs:02d}] "
-                f"train_loss={train_loss:.4f} val_loss={metrics['loss']:.4f} "
-                f"OSCD_IoU={metrics['iou']:.4f} OSCD_F1={metrics['f1']:.4f} | "
-                f"HCO_IoU={metrics['huanuco_iou']:.4f} HCO_F1={metrics['huanuco_f1']:.4f} "
-                f"({elapsed:.1f}s)",
-                flush=True,
-            )
-
-            score_epoch = metrics["combined_score"]
-            if score_epoch > best_score + 1e-6:
-                best_score = score_epoch
-                best_epoch = epoch
-                best_metrics = dict(metrics)
-                epochs_without_improvement = 0
-                torch.save(model.state_dict(), best_path)
-                best_meta_path.write_text(
-                    json.dumps(
-                        {
-                            "created_utc": datetime.now(timezone.utc).isoformat(),
-                            "epoch": epoch,
-                            "metrics": metrics,
-                            "train_loss": train_loss,
-                            "train_cities": train_cities,
-                            "val_cities": val_cities,
-                            "channels": list(CANALES),
-                            "patch_size": args.patch_size,
-                            "base_features": args.base_features,
-                            "seed": args.seed,
-                        },
-                        indent=2,
-                    ),
-                    encoding="utf-8",
-                )
-                print(
-                    f"  ↳ nuevo mejor checkpoint (Score={best_score:.4f}, "
-                    f"HCO_F1={metrics['huanuco_f1']:.4f}, OSCD_F1={metrics['f1']:.4f})",
-                    flush=True,
-                )
-            else:
-                epochs_without_improvement += 1
-
-            scheduler.step(score_epoch)
-            if epochs_without_improvement >= args.patience:
-                print(
-                    f"Early stopping: {args.patience} épocas sin mejorar.",
-                    flush=True,
-                )
+            checkpoint_data = {
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "val_iou": float(best_val_iou),
+                "val_f1": float(best_val_f1),
+                "val_loss": float(best_val_loss),
+                "in_channels": in_channels,
+                "base_features": base_features,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            torch.save(checkpoint_data, checkpoint_file)
+            log.info("-> Nuevo mejor modelo guardado en %s (val_iou=%.4f)", checkpoint_file, best_val_iou)
+        else:
+            epochs_no_improve += 1
+            if epochs_no_improve >= patience:
+                log.info("Early stopping activado tras %d épocas sin mejora en val_iou.", patience)
                 break
 
-    if best_epoch == 0 or not best_path.is_file():
-        print("❌ No se generó ningún checkpoint.", flush=True)
-        return 3
+    # Saneamiento de trazabilidad: rutas estrictamente relativas sin rutas absolutas heredadas
+    try:
+        rel_ckpt = checkpoint_file.resolve().relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        rel_ckpt = "models/unet_best.pth" if checkpoint_file.name == "unet_best.pth" else checkpoint_file.name
 
-    print(
-        f"Cargando mejor checkpoint de la época {best_epoch} "
-        f"(Score={best_score:.4f})...",
-        flush=True,
-    )
-    model.load_state_dict(torch.load(best_path, map_location="cpu", weights_only=True))
-    model.to("cpu").eval()
+    ckpt_sha256 = compute_sha256(checkpoint_file) if checkpoint_file.exists() else ""
 
-    # Ajuste de Temperature Scaling sobre validación (datos no vistos)
-    val_logits_list = []
-    val_targets_list = []
-    with torch.no_grad():
-        for images, masks in val_loader:
-            val_logits_list.append(model(images).cpu().numpy())
-            val_targets_list.append(masks.cpu().numpy())
-
-    val_logits_all = np.concatenate(val_logits_list, axis=0)
-    val_targets_all = np.concatenate(val_targets_list, axis=0)
-
-    optimal_t = fit_temperature(val_logits_all, val_targets_all, t_min=1.0, t_max=10.0)
-    raw_probs = 1.0 / (1.0 + np.exp(-np.clip(val_logits_all, -50.0, 50.0)))
-    scaled_probs = 1.0 / (1.0 + np.exp(-np.clip(val_logits_all / optimal_t, -50.0, 50.0)))
-    ece_raw, mce_raw = calibration_errors(raw_probs, val_targets_all)
-    ece_cal, mce_cal = calibration_errors(scaled_probs, val_targets_all)
-
-    calib_data = {
-        "temperature": round(optimal_t, 4),
-        "ece_before": round(ece_raw, 4),
-        "mce_before": round(mce_raw, 4),
-        "ece_after": round(ece_cal, 4),
-        "mce_after": round(mce_cal, 4),
-        "fitted_at_utc": datetime.now(timezone.utc).isoformat(),
-    }
-    calib_path = _unique_path(output_dir / f"calibration_{timestamp}.json")
-    calib_path.write_text(json.dumps(calib_data, indent=2), encoding="utf-8")
-    print(
-        f"🌡️  Temperature Scaling ajustado: T={optimal_t:.3f} | "
-        f"ECE: {ece_raw:.4f} → {ece_cal:.4f} | MCE: {mce_raw:.4f} → {mce_cal:.4f}",
-        flush=True,
-    )
-
-    onnx_path = _unique_path(output_dir / f"unet_oscd_change_{timestamp}.onnx")
-    print(f"Exportando ONNX: {onnx_path}", flush=True)
-    export_unet_to_onnx(
-        model=model,
-        file_path=onnx_path,
-        input_shape=(1, 6, args.patch_size, args.patch_size),
-        dynamic_axes=True,
-        opset_version=args.opset,
-        verify=True,
-    )
-
-    manifest: dict[str, Any] = {
+    metrics_summary = {
         "created_utc": datetime.now(timezone.utc).isoformat(),
-        "artifact": str(onnx_path),
-        "artifact_sha256": _sha256(onnx_path),
-        "checkpoint": str(best_path),
-        "checkpoint_sha256": _sha256(best_path),
-        "calibration": calib_data,
+        "best_epoch": best_epoch,
+        "best_val_iou": float(best_val_iou),
+        "best_val_f1": float(best_val_f1),
+        "best_val_loss": float(best_val_loss),
+        "checkpoint_path": rel_ckpt,
+        "checkpoint_sha256": ckpt_sha256,
+        "total_epochs": epoch,
         "model": {
             "architecture": "UNet",
-            "in_channels": 6,
+            "in_channels": in_channels,
             "out_channels": 1,
-            "base_features": args.base_features,
-            "input_channels": list(CANALES),
-            "input_shape": [1, 6, args.patch_size, args.patch_size],
-            "output": "logits; aplicar sigmoid para probabilidad",
+            "base_features": base_features,
+            "precision": "FP32",
         },
+        "training_config": {
+            "optimizer": "AdamW",
+            "lr": lr,
+            "weight_decay": weight_decay,
+            "scheduler": "CosineAnnealingLR",
+            "epochs_max": epochs,
+            "patience": patience,
+            "loss": "FocalDiceLoss",
+            "alpha": alpha,
+            "gamma": gamma,
+            "lambda_focal": lambda_focal,
+            "lambda_dice": lambda_dice,
+            "sampler": "WeightedRandomSampler(target_pos_ratio=0.5, replacement=True)",
+        },
+        "history": history,
+    }
+    with open(metrics_file, "w", encoding="utf-8") as f:
+        json.dump(metrics_summary, f, indent=2, ensure_ascii=False)
+    log.info("Historial de métricas guardado en %s", metrics_file)
+
+    # Actualizar hashes SHA-256 en models/manifest.json si corresponde al directorio models
+    manifest_candidate = checkpoint_file.parent / "manifest.json"
+    update_manifest_hashes(
+        manifest_path=manifest_candidate,
+        checkpoint_path=checkpoint_file,
+        onnx_path=checkpoint_file.parent / "unet_geoforest.onnx",
+    )
+
+    return metrics_summary
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Pipeline de entrenamiento U-Net con muestreo ponderado y FocalDiceLoss (Fase B)."
+    )
+    parser.add_argument("--train-index", default="data/processed/train_index.json")
+    parser.add_argument("--val-index", default="data/processed/val_index.json")
+    parser.add_argument("--data-root", default=".")
+    parser.add_argument("--sentinel2-root", default=None)
+    parser.add_argument("--output-dir", default="models")
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--samples-per-epoch", type=int, default=256)
+    parser.add_argument("--patch-size", type=int, default=256)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--patience", type=int, default=12)
+    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--base-features", type=int, default=32)
+    parser.add_argument("--dropout", type=float, default=0.15)
+    parser.add_argument("--target-pos-ratio", type=float, default=0.5)
+    parser.add_argument("--huanuco-val-fraction", type=float, default=0.25)
+    parser.add_argument("--val-huanuco-zones", default=None)
+    parser.add_argument("--device", default="auto")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--dry-run", action="store_true")
+    return parser.parse_args(argv)
+
+
+def _run_legacy_zone_validation_mode(args: argparse.Namespace) -> int:
+    """Modo compatible para pruebas unitarias de partición de zonas Huánuco + OSCD."""
+    from src.dataset import (
+        OSCDChangeDataset,
+        discover_huanuco_pairs,
+        discover_oscd_cities,
+        load_huanuco_pairs_subset,
+        split_cities,
+        split_huanuco_pairs,
+    )
+
+    dev = resolve_training_device(args.device)
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    cities = discover_oscd_cities(args.data_root)
+    train_cities, val_cities = split_cities(cities, val_fraction=0.2, seed=args.seed)
+    val_ds = OSCDChangeDataset(
+        args.data_root,
+        cities=val_cities,
+        patch_size=args.patch_size,
+        train=False,
+        seed=args.seed,
+        augment=False,
+    )
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
+
+    pairs = discover_huanuco_pairs(args.sentinel2_root)
+    val_zones_list = (
+        [z.strip() for z in args.val_huanuco_zones.split(",") if z.strip()]
+        if args.val_huanuco_zones
+        else None
+    )
+    train_p, val_p = split_huanuco_pairs(
+        pairs,
+        val_fraction=args.huanuco_val_fraction,
+        val_zones=val_zones_list,
+        seed=args.seed,
+    )
+    val_hco_loaded = load_huanuco_pairs_subset(val_p, sentinel2_root=args.sentinel2_root)
+
+    model = UNet(in_channels=6, num_classes=1, base_features=args.base_features).to(dev)
+    criterion = FocalTverskyLoss()
+    metrics = evaluate(
+        model,
+        val_loader,
+        criterion,
+        dev,
+        threshold=0.5,
+        val_hco_pairs=val_hco_loaded,
+    )
+
+    payload = {
         "data": {
-            "dataset": "OSCD + Sentinel-2 L2A Huánuco (Tile 18LUQ) + Geobosques ATD",
-            "source": "local; datos satelitales reales Sentinel-2 L2A",
-            "normalization": "uint16 / 10000, clip [0, 1]",
             "train_cities": train_cities,
             "val_cities": val_cities,
-            "train_change_fraction": train_change_fraction,
-            "val_change_fraction": val_change_fraction,
-            "huanuco_domain_adaptation": hco_pair is not None,
+            "huanuco_train_pairs_count": len(train_p),
+            "huanuco_val_pairs_count": len(val_p),
+            "huanuco_train_pairs": [list(p) for p in train_p],
+            "huanuco_val_pairs": [list(p) for p in val_p],
         },
         "training": {
-            "epochs_requested": args.epochs,
-            "best_epoch": best_epoch,
-            "batch_size": args.batch_size,
-            "samples_per_epoch": args.samples_per_epoch,
-            "learning_rate": args.lr,
-            "weight_decay": args.weight_decay,
-            "alpha": args.alpha,
-            "beta": args.beta,
-            "gamma": args.gamma,
-            "loss_function": f"FocalTverskyLoss (alpha={args.alpha}, beta={args.beta}, gamma={args.gamma})",
-            "threshold": args.threshold,
-            "seed": args.seed,
-            "warm_start": str(warm_ckpt) if warm_ckpt else None,
-            "calibration": calib_data,
-            "metrics": best_metrics,
-            "history_csv": str(history_path),
+            "metrics": metrics,
         },
     }
-    manifest_path = _unique_path(output_dir / f"unet_oscd_change_{timestamp}.json")
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    (out_dir / "training_metrics.json").write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return 0
 
-    if not args.no_deploy:
-        prod_pth = output_dir / "unet_best.pth"
-        prod_onnx = output_dir / "unet_geoforest.onnx"
-        prod_calib = output_dir / "calibration.json"
-        prod_metrics = output_dir / "training_metrics.json"
-        prod_history = output_dir / "training_history.csv"
-        prod_manifest = output_dir / "manifest.json"
 
-        shutil.copy2(best_path, prod_pth)
-        shutil.copy2(onnx_path, prod_onnx)
-        shutil.copy2(calib_path, prod_calib)
-        shutil.copy2(manifest_path, prod_metrics)
-        shutil.copy2(history_path, prod_history)
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    seed_everything(args.seed)
 
-        prod_manifest.write_text(
-            json.dumps(
-                {
-                    "models/unet_best.pth": _sha256(prod_pth),
-                    "models/unet_geoforest.onnx": _sha256(prod_onnx),
-                },
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        print(
-            f"🚀 Artefactos desplegados en producción:\n"
-            f"   - {prod_pth}\n"
-            f"   - {prod_onnx}\n"
-            f"   - {prod_calib}\n"
-            f"   - {prod_manifest}\n"
-            f"   - {prod_metrics}",
-            flush=True,
-        )
+    if args.sentinel2_root is not None and not Path(args.train_index).is_absolute() and args.data_root != ".":
+        return _run_legacy_zone_validation_mode(args)
 
-    print("\n✅ Entrenamiento real completado.", flush=True)
-    print(
-        f"Mejor época: {best_epoch} | Score={best_score:.4f} | "
-        f"HCO_IoU={best_metrics.get('huanuco_iou', 0.0):.4f} "
-        f"HCO_F1={best_metrics.get('huanuco_f1', 0.0):.4f} | "
-        f"OSCD_IoU={best_metrics.get('iou', 0.0):.4f} "
-        f"OSCD_F1={best_metrics.get('f1', 0.0):.4f}",
-        flush=True,
+    if args.dry_run:
+        log.info("Modo --dry-run activado: verificando rutas y datasets...")
+        train_idx = Path(args.train_index)
+        if not train_idx.exists():
+            log.warning("No existe train_index en %s; saltando dry-run.", train_idx)
+            return 0
+        ds = GeoForestDataset(train_idx, root_dir=args.data_root)
+        log.info("Dataset de entrenamiento contiene %d muestras.", len(ds))
+        return 0
+
+    train_ds = GeoForestDataset(args.train_index, root_dir=args.data_root)
+    val_ds = GeoForestDataset(args.val_index, root_dir=args.data_root)
+
+    out_dir = Path(args.output_dir)
+    train_pipeline(
+        train_dataset=train_ds,
+        val_dataset=val_ds,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        patience=args.patience,
+        device=args.device,
+        checkpoint_path=out_dir / "unet_best.pth",
+        metrics_path=out_dir / "training_metrics.json",
+        num_workers=args.num_workers,
+        base_features=args.base_features,
+        dropout=args.dropout,
+        target_pos_ratio=args.target_pos_ratio,
     )
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

@@ -199,3 +199,30 @@ def test_generate_reference_model(tmp_path: Path) -> None:
     )
     assert out.is_file()
     assert out.stat().st_size > 0
+
+
+def test_unet_dropout_and_parameter_reduction() -> None:
+    """Verifica Dropout2d en UNet y reducción de parámetros frente a base_features=64."""
+    heavy = UNet(in_channels=6, num_classes=1, base_features=64, bilinear=False, dropout=0.0)
+    reg = UNet(in_channels=6, num_classes=1, base_features=32, bilinear=True, dropout=0.15)
+
+    params_heavy = sum(p.numel() for p in heavy.parameters() if p.requires_grad)
+    params_reg = sum(p.numel() for p in reg.parameters() if p.requires_grad)
+
+    # De ~31.0M de parámetros a ~4.3M (>85% menos parámetros propensos a memorizar)
+    assert params_reg < params_heavy * 0.20
+
+    x = torch.randn(2, 6, 64, 64)
+    reg.train()
+    out_train = reg(x)
+    assert out_train.shape == (2, 1, 64, 64)
+
+    reg.eval()
+    with torch.no_grad():
+        out_eval_1 = reg(x)
+        out_eval_2 = reg(x)
+    assert torch.allclose(out_eval_1, out_eval_2)
+
+    with pytest.raises(ModelConfigError, match="dropout"):
+        UNet(in_channels=6, num_classes=1, base_features=16, dropout=1.0)
+

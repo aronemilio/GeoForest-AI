@@ -65,3 +65,29 @@ def test_focal_tversky_backward_gradients() -> None:
 
     assert logits.grad is not None
     assert torch.isfinite(logits.grad).all()
+
+
+def test_focal_tversky_with_bce_and_label_smoothing_regularization() -> None:
+    pure_loss = FocalTverskyLoss(alpha=0.3, beta=0.7, gamma=1.333, bce_weight=0.0)
+    reg_loss = FocalTverskyLoss(
+        alpha=0.3,
+        beta=0.7,
+        gamma=1.333,
+        bce_weight=0.2,
+        label_smoothing=0.05,
+    )
+
+    # Con logits extremos (+/-25), el término BCE con label smoothing (0.025 / 0.975)
+    # penaliza la sobreconfianza excesiva (>0) en lugar de colapsar a 0.
+    logits = torch.tensor([[[[25.0, -25.0], [-25.0, 25.0]]]], requires_grad=True)
+    targets = torch.tensor([[[[1.0, 0.0], [0.0, 1.0]]]])
+
+    val_pure = pure_loss(logits, targets).item()
+    val_reg = reg_loss(logits, targets)
+    val_reg.backward()
+
+    assert val_pure < 1e-4
+    assert val_reg.item() > 0.05
+    assert logits.grad is not None
+    assert torch.isfinite(logits.grad).all()
+
