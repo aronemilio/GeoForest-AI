@@ -1,14 +1,15 @@
 # Guía de exposición — GeoForest-AI Huánuco
 
 > Documento de preparación para la exposición ante jurados, SERFOR y FEMA. Esta guía detalla **el recorrido narrativo, qué destacar y cómo demostrar la plataforma**.
-> **Advertencia de comunicación:** el score del modelo cuenta con calibración post-entrenamiento mediante Temperature Scaling ($T > 1.0$) para mitigar la sobreconfianza. Checkpoint actual: época 8 de 12. Validación OSCD por ciudades no vistas (usada para seleccionar la época; no es un test ciego): **F1 22.54 %, IoU 12.70 %, precisión 39.69 %, recall 15.74 %**. Calibración medida en OSCD: Brier **0.0332** (baseline 0.0348), ECE-15 **0.0251**, MCE-15 **0.4485**; `p ≥ 0.80` → **44.49 %** de precisión empírica y `p ≥ 0.90` → **50.55 %**. La métrica de Huánuco (F1 78.84 %, IoU 65.07 %) usa un pseudo-label generado con las mismas reglas del entrenamiento y **no es validación independiente**. Decir «prototipo en validación», no «detector validado». La serie de 8 semanas del Modo Pitch es **demostrativa** (bins fijos de 2026), y la columna «Score heurístico de persistencia espacial (%)» de las alertas es **heurística, no oficial ni calibrada**. No presentar cifras de 98–99 % como confianza del modelo.
+> **Advertencia de comunicación:** el score del modelo pasa por un escalado de temperatura post-entrenamiento (`p = σ(z/T)`) con `T = 0.3277` en `models/calibration.json`. Al ser `T < 1`, el escalado **agudiza** las probabilidades; no la describas como suavizado ni como mitigación de sobreconfianza. Checkpoint reportado: época 8 de 12 (el archivo `models/unet_best.pth` no está en este checkout). Validación OSCD por ciudades no vistas (usada para seleccionar la época; no es un test ciego): **F1 22.54 %, IoU 12.70 %, precisión 39.69 %, recall 15.74 %**. Calibración medida en OSCD: Brier **0.0332** (baseline 0.0348), ECE-15 **0.0251**, MCE-15 **0.4485**; `p ≥ 0.80` → **44.49 %** de precisión empírica y `p ≥ 0.90` → **50.55 %**. La métrica de Huánuco (F1 78.84 %, IoU 65.07 %) usa un pseudo-label generado con las mismas reglas del entrenamiento y **no es validación independiente**. Decir «prototipo en validación», no «detector validado». La serie de 8 semanas del Modo Pitch es **demostrativa** (bins fijos de 2026), y la columna «Score heurístico de persistencia espacial (%)» de las alertas es **heurística, no oficial ni calibrada**. No presentar cifras de 98–99 % como confianza del modelo. Las alertas PNCB son puntos oficiales, pero `area_ha` (`puntos × 0.12`), `confianza_pct` (logit constante 3.2), `ndvi_cambio` (`-0.30`), los deltas y el estado «Alerta Temprana Validada (MINAM)» son atributos derivados en `app/services/alerts_data.py`; el expediente no debe presentarse como validación oficial del PNCB.
 
 ## Checklist de arranque (10 min antes)
 
 1. **Terminal — panel principal Streamlit:**
    ```bash
    cd "$(git rev-parse --show-toplevel)"
-   source venv/bin/activate
+   source .venv/bin/activate
+   python scripts/verificar_pipeline.py   # debe reportar OK antes de la demo
    streamlit run app/main.py --server.headless true --server.port 8501
    ```
    Verificar que `http://127.0.0.1:8501` responda con HTTP 200.
@@ -35,12 +36,12 @@
 ### B. KPIs y Consola SIG (Mapa Multicapa)
 
 - **Tarjetas de Indicadores:**
-  - *Alertas Satelitales Activas:* 2,853 eventos de deforestación agrupados del PNCB Geobosques.
-  - *Área Afectada Registrada:* Superficie calculada a partir de alertas oficiales, en hectáreas.
+  - *Alertas Satelitales Activas:* 2,842 eventos agrupados (2,865 puntos PNCB Geobosques).
+  - *Área Afectada Registrada:* **no es una cifra oficial**: `app/services/alerts_data.py` calcula `area_ha = puntos × 0.12` (supuesto local).
   - *Severidad Alta:* Eventos clasificados por tamaño y prioridad para inspección FEMA.
-  - *Score de Consistencia:* valor normalizado del modelo; la app lo muestra como «Score heurístico (sin calibrar)», pero **no es una probabilidad calibrada ni una precisión validada**. Medición OSCD: `p ≥ 0.80` → 44.49 % de precisión empírica; `p ≥ 0.90` → 50.55 %.
+  - *Score de Consistencia:* **no sale del modelo**: `alerts_data.py` usa un logit constante `3.2` (≈99.8 % en todas las alertas). La app lo rotula «Score heurístico (sin calibrar)»; no es una probabilidad calibrada ni una precisión validada. Medición OSCD aparte: `p ≥ 0.80` → 44.49 % de precisión empírica; `p ≥ 0.90` → 50.55 %.
 - **Cartografía Folium Abierta (Sin API Keys bloqueantes):**
-  - Mostrar la conmutación de capas: *Satélite real (Esri World Imagery)*, *Sentinel-2 Cloudless EOX*, *Copernicus CDSE* y *Focos Térmicos NASA VIIRS*.
+  - Mostrar la conmutación de capas: *Satélite real (Esri World Imagery)*, *Sentinel-2 Cloudless EOX* y *Focos Térmicos NASA VIIRS*. La capa «Copernicus CDSE» no existe en `map_view.py` (el parámetro `mostrar_sentinel_copernicus` no se usa); no anunciarla.
   - Inspeccionar un polígono de alerta sobre el mapa para mostrar el popup con identificador único (e.g. `PNCB-HCO-0001`), coordenadas UTM 18S y área.
 
 ### C. Consola de Misión Satelital (Laboratorio de Inferencia U-Net)
@@ -64,8 +65,8 @@
 ### E. Cierre y Cadena de Custodia Digital
 
 - Descargar la capa vectorial en **GeoJSON** para interoperabilidad con QGIS o ArcGIS.
-- Descargar el **Expediente Técnico Digital**: destacar el bloque criptográfico con **hash SHA-256**, que permite verificar la integridad técnica y la trazabilidad; **no certifica la inmutabilidad de la evidencia ni sustituye una pericia oficial** de FEMA/SERFOR.
-- Respaldar la solidez del código: **103 pruebas unitarias automatizadas con 100% de éxito**.
+- Descargar el **Expediente Técnico Digital**: destacar el bloque criptográfico con **hash SHA-256**, que permite verificar la integridad técnica y la trazabilidad; **no certifica la inmutabilidad de la evidencia ni sustituye una pericia oficial** de FEMA/SERFOR, y **no valida las alertas ante el PNCB** (los campos `area_ha`, `confianza_pct`, `ndvi_cambio` y `estado` son derivados locales).
+- Respaldar la solidez del código: **188 pruebas automatizadas**; sin datos/modelos locales pasan **178** y las 10 restantes se **omiten** (`skipped`) con el motivo y el comando de regeneración (no afirmar «100 % de éxito» sin ejecutar el gate real).
 
 ---
 
@@ -82,6 +83,17 @@
 
 | Síntoma | Causa probable | Acción |
 |---|---|---|
+| `No module named pytest` / `No module named rasterio` | Se activó `venv/`, que solo contiene `pip` | `source .venv/bin/activate` y repetir el comando. |
+| `ModuleNotFoundError: No module named 'src'` | Script ejecutado sin la raíz en `sys.path` (ya corregido en `scripts/`) | Actualizar a la versión actual de `scripts/*.py` y ejecutar desde la raíz del repo. |
+| `Falta el checkpoint real en models/unet_best.pth` | Artefactos de modelo no versionados | `python scripts/run_phase1_and_2.py` y luego `python scripts/export_onnx.py`. |
+| `Falta manifiesto: data/processed/benchmark_scenes.json` | Fase 1 no ejecutada en este checkout | `python scripts/run_phase1_and_2.py`. |
+| `0 >= 103` en pruebas de `gee_dataset` | `data/raw/sentinel2/` vacío (hoy esas pruebas se **omiten**, no fallan) | Descargar los pares Sentinel-2 con autorización y reejecutar; el mensaje del `skip` indica qué falta. |
+| La previsualización Sentinel-2 «real» parece ruido | Fallback sintético de `cargar_escena_sentinel2_real` cuando faltan los GeoTIFF | No presentarla como real; cargar `data/raw/sentinel2/2024-07-18_*` y `2024-09-11_*`. El servicio ya la marca `es_simulado: True` (cambio en curso); verificar que la UI lo respete. |
+| La inferencia devuelve 0 ha o un heatmap uniforme | Los ONNX servibles tienen salida casi constante (rango < 0.02): no están entrenados o el export está roto | No presentar máscaras como detección; ejecutar `python scripts/verificar_pipeline.py` y restaurar `models/unet_best.pth` / `models/unet_geoforest.onnx`. |
+| Con umbral Manual 0.40 toda la escena queda como alerta | Las probabilidades rondan 0.465 (salida constante), por encima de 0.40 | No bajar el umbral por debajo de 0.5 ni interpretar ese resultado; el problema es el modelo. |
+| «Otsu», «Filtro biofísico» y «Reescalar score» no cambian nada | En `tab_inferencia.py` son controles de UI sin llamadas a `compute_otsu_threshold`, `apply_biophysical_filter` ni `calibrate_probabilities` | No afirmar que están activos; pendiente del responsable de `app/components/**`. |
+| El expediente dice «Alerta Temprana Validada (MINAM)» y 99.8 % | Campos derivados en `alerts_data.py` (logit constante, `puntos × 0.12`) | Presentarlos como estimación local, nunca como validación oficial del PNCB. |
+| `pytest` reporta 10 `skipped` | Faltan datos/modelos no versionados; las pruebas del gate se omiten a propósito | No es un fallo: regenerar con `scripts/run_phase1_and_2.py` y `scripts/export_onnx.py`, y repetir. |
 | Panel no carga / Connection refused | Servidor apagado | Arrancarlo con `streamlit run app/main.py --server.port 8501`. |
 | Puerto 8501 ocupado | Proceso previo colgado | Matar proceso con `kill -9 $(lsof -t -i:8501)`. |
 | Advertencia de caché | Recarga en curso | Recargar la pestaña del navegador con `Ctrl+Shift+R`. |
@@ -93,4 +105,4 @@
 - `app/services/` (`copernicus.py`, `alerts_data.py`, `expediente.py`, `nasa_firms.py`).
 - `src/infer.py` (motor ONNX, Otsu, normalización de scores y filtro biofísico).
 - `src/preprocess.py` (validación de rásteres, remuestreo explícito e índices espectrales).
-- `tests/` (92 pruebas unitarias automatizadas).
+- `tests/` (188 pruebas; 10 se omiten si faltan datos y modelos no versionados).

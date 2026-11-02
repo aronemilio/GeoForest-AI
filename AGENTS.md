@@ -62,7 +62,7 @@ de su rol; así el ownership queda garantizado por permisos y no solo por instru
 ## Entorno y comandos
 
 ```bash
-source venv/bin/activate                  # entorno virtual del proyecto
+source .venv/bin/activate                 # entorno virtual con dependencias (venv/ está vacío)
 python -m pytest tests/ -v                # pruebas
 streamlit run app/main.py                 # interfaz
 ```

@@ -31,7 +31,7 @@ description: Guía para cambios en src/preprocess.py y tests/test_preprocess.py 
 2. Añade o actualiza pruebas sintéticas con `tmp_path` (sin red ni datos reales).
 3. Ejecuta:
    ```bash
-   source venv/bin/activate
+   source .venv/bin/activate
    python -m pytest tests/test_preprocess.py -q
    ```
 4. Reporta archivos, comandos y resultados.

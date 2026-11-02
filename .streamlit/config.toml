@@ -53,3 +53,7 @@ linkColor = "#A9D3B4"
 # Recuadros informativos en clave bosque (por defecto serían azules).
 blueBackgroundColor = "#173A2A"
 blueTextColor = "#CFE8D6"
+
+# --- Cliente y barra de herramientas ----------------------------------------
+[client]
+toolbarMode = "minimal"

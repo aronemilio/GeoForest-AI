@@ -36,6 +36,25 @@ CALIBRATION_JSON_PATH = Path("models/calibration.json")
 VAL_INDEX_PATH = Path("data/processed/val_index.json")
 TRAIN_INDEX_PATH = Path("data/processed/train_index.json")
 
+# La suite evalúa el checkpoint y el ONNX de producción; sin ellos no hay nada
+# que medir. Se omite explícitamente en lugar de fallar en un checkout limpio.
+_ARTEFACTOS_REQUERIDOS = (
+    CHECKPOINT_PATH,
+    ONNX_PATH,
+    CALIBRATION_JSON_PATH,
+    VAL_INDEX_PATH,
+)
+_FALTANTES = [str(ruta) for ruta in _ARTEFACTOS_REQUERIDOS if not ruta.is_file()]
+pytestmark = pytest.mark.skipif(
+    bool(_FALTANTES),
+    reason=(
+        "Calidad de producción omitida: faltan artefactos no versionados ("
+        + ", ".join(_FALTANTES)
+        + "). Regenerar con `python scripts/run_phase1_and_2.py` y "
+        "`python scripts/export_onnx.py`."
+    ),
+)
+
 # Umbrales explícitos de calidad en producción
 MAX_ECE_AFTER = 0.0250
 MAX_GLOBAL_BRIER_AFTER = 0.0332

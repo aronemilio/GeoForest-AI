@@ -7,22 +7,24 @@
   2. **Valle del Huallaga (Chinchao, Churubamba, Acomayo):** Corredor agroforestal de transición hacia selva alta.
 
 ## 2. Pila Tecnológica
-- **Lenguaje:** Python 3.10.20
-- **Frameworks de ML/DL:** PyTorch 2.5 (CUDA 12.1), ONNX 1.23, ONNX Runtime 1.23
-- **Librerías Geoespaciales:** Rasterio 1.4, GeoPandas 1.1, Shapely 2.1, PyProj 3.7
-- **Interfaz y Cartografía:** Streamlit 1.65, Folium 0.20, Streamlit-Folium 0.26
-- **Pruebas:** Pytest 9.1 (**92 pruebas automatizadas activas con 100% de éxito**)
+- **Lenguaje:** Python 3.14.8 (`.venv`; `venv/` solo contiene `pip`)
+- **Frameworks de ML/DL:** PyTorch 2.14.1+cpu, ONNX 1.23.2, ONNX Runtime 1.31.0
+- **Librerías Geoespaciales:** Rasterio 1.5.2, GeoPandas 1.2.0, Shapely 2.2.0, PyProj 3.8.0
+- **Interfaz y Cartografía:** Streamlit 1.66.0, Folium 0.20.0, Streamlit-Folium 0.27.4
+- **Pruebas:** Pytest 9.1 (**188 pruebas**; 178 pasan sin datos/modelos locales y 10 se omiten si faltan los artefactos no versionados de `data/` y `models/`)
 
 ## 3. Estado del Entrenamiento y Modelos
 
 ### 3.1 Pesos y Grafos ONNX
 - **Dataset de Base:** OSCD (14 ciudades) + adaptación de dominio con par multitemporal real Sentinel-2 L2A Huánuco (Tile `18LUQ`: 2024-07-18 vs 2024-09-11) y alertas oficiales ATD de Geobosques (MINAM).
 - **Checkpoints y Grafos Exportados:**
-  - `models/unet_best.pth` (31.1 MB, FP32, `base_features=32`).
-  - `models/unet_geoforest.onnx` (31.1 MB, FP32, opset 17, dynamic axes).
-  - Enlaces simbólicos: `unet_sentinel2_huanuco.onnx` y `unet_sentinel2_multitemporal.onnx`.
-  - Hashes criptográficos registrados en `models/manifest.json`.
-  - **Trazabilidad pendiente:** `models/training_metrics.json` conserva rutas absolutas de otro checkout (`/home/emi/Documentos/GeoForest-AI`). Los SHA-256 coinciden con los artefactos actuales, pero el manifiesto debe regenerarse en esta ruta.
+  - `models/unet_best.pth` (31.1 MB, FP32, `base_features=32`) — **ausente en este checkout**.
+  - `models/unet_geoforest.onnx` (31.1 MB, FP32, opset 17, dynamic axes) — **ausente en este checkout**.
+  - Presentes solo como archivos independientes (no enlaces simbólicos): `unet_sentinel2_huanuco.onnx` (`7a0e60d7…`) y `unet_sentinel2_multitemporal.onnx` (`5ecf644e…`), usados por `app/services/onnx_demo.py` y `tab_inferencia.py`.
+  - `models/manifest.json` registra hashes de artefactos ausentes (`19929711…` para el `.pth`, `5df72419…` para el ONNX), por lo que **no verifica** los archivos presentes.
+  - **Crítico:** un smoke test con entrada aleatoria (`scripts/verificar_pipeline.py`) muestra que ambos ONNX servibles devuelven una salida **casi constante** (rango 0.0146 y 0.0189, σ ≈ 0.002): no discriminan cambio. Las probabilidades quedan en ≈0.465, por debajo de 0.5 (0 detecciones) y por encima de 0.40 (toda la escena como alerta si se baja el umbral). No son los artefactos que produjeron las métricas de `reports/benchmark_operational_report.json`.
+  - Regeneración: `python scripts/run_phase1_and_2.py` (datos → entrenamiento) y `python scripts/export_onnx.py` (checkpoint → ONNX + manifiesto). Ambos scripts fallaban con `ModuleNotFoundError: No module named 'src'` al ejecutarse desde la raíz; corregido con bootstrap de `sys.path`.
+  - **Trazabilidad pendiente:** `models/training_metrics.json` conserva rutas absolutas de otro checkout (`/home/emi/Documentos/GeoForest-AI`). Los SHA-256 no coinciden con los artefactos actuales; regenerar el manifiesto tras reexportar.
 
 ### 3.2 Motor de Inferencia (scores no calibrados) (`src/infer.py`)
 - `ONNXForestPredictor`: Inferencia optimizada sobre CPU con configuración explícita de hilos (`intra_op=4`, `inter_op=1`).
@@ -49,9 +51,10 @@
 ## 4. Visualizador y Consola C2 Streamlit
 
 ### 4.1 Datos de Entrada y Series Demostrativas
-- **PNCB Geobosques (MINAM):** 2,853 alertas tempranas reales de deforestación en Huánuco cargadas desde `data/processed/vectores/atd_huanuco.geojson` mediante `obtener_alertas_reales_geobosques`.
+- **PNCB Geobosques (MINAM):** 2,865 puntos oficiales en `data/processed/vectores/atd_huanuco.geojson`, agrupados en 2,842 eventos por fecha y celda de ~100 m (`obtener_alertas_reales_geobosques`).
+- **Atributos derivados (no oficiales):** en `alerts_data.py`, `area_ha = puntos × 0.12`, `confianza_pct` proviene de un logit constante `3.2` (≈99.8 % para toda alerta), `ndvi_cambio = -0.30`, deltas fijos y `estado = «Alerta Temprana Validada (MINAM)»`. `expediente.py` los reproduce y afirma «registros oficiales validados por PNCB Geobosques»: **no son datos oficiales ni una validación del PNCB**.
 - **NASA FIRMS VIIRS:** Consulta en tiempo real de anomalías térmicas y focos de calor vía API.
-- **Alcance de datos reales:** Las vistas operativas usan alertas y escenas reales; el Modo Pitch conserva una serie demostrativa de 8 semanas. La columna interna `confianza_pct` (UI: «Score heurístico de persistencia espacial (%)») es una fórmula heurística basada en el número de puntos; **no es una confianza oficial del PNCB ni una probabilidad calibrada**.
+- **Alcance de datos reales:** Las vistas operativas usan alertas y escenas reales; el Modo Pitch conserva una serie demostrativa de 8 semanas. La columna `confianza_pct` (UI: «Score heurístico de persistencia espacial (%)») **no depende de los puntos ni del modelo**: es un logit constante convertido con la temperatura, por lo que vale ≈99.8 % en todas las alertas; no es una confianza oficial del PNCB ni una probabilidad calibrada.
 
 ### 4.2 Consola de Misión Satelital (`app/components/tab_inferencia.py`)
 - **Catálogo de escenas:** `CATALOGO_ESCENAS_REALES` en `app/services/copernicus.py` ofrece 5 escenas multitemporales reales Sentinel-2 L2A (Huánuco Tile 18LUQ y ESA OSCD).

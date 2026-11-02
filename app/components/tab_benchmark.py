@@ -97,7 +97,7 @@ def render_tab_benchmark() -> None:
             - **Resolución espacial:** `10 metros / píxel (Sentinel-2 L2A)`
             - **Bandas de entrada:** `6 canales: T0 (B4, B8, B11) + T1 (B4, B8, B11)`
             - **Tamaño de ventana:** `{m.tamanoTilePx} x {m.tamanoTilePx} píxeles` (655.36 ha por parche)
-            - **Peso del modelo servido:** `{peso_mb:.1f} MB` (`models/unet_geoforest.onnx`)
+            - **Peso del modelo servido:** `{peso_mb:.1f} MB` (`models/unet_sentinel2_multitemporal.onnx`)
             - **Post-procesamiento y Calibración:** `Temperature Scaling (T=0.5) + Umbral Otsu + Filtro Biofísico ΔNDVI/ΔNBR`
             - **Fusión de operadores:** `Conv + BatchNorm + ReLU en el grafo ONNX`
             - **Trazabilidad:** hash SHA-256 del tensor de entrada y sus metadatos como huella de integridad reproducible para auditoría técnica.

@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
@@ -23,6 +24,11 @@ from rasterio.transform import from_origin
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+
+# Permitir la ejecución directa `python scripts/export_onnx.py` desde la raíz
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.dataset import NORMALIZATION_DIVISOR, GeoForestDataset
 from src.data.indexer import build_index

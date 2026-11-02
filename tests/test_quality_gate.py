@@ -49,6 +49,28 @@ MODEL_MANIFEST_PATH = Path("models/manifest.json")
 TRAINING_METRICS_PATH = Path("models/training_metrics.json")
 REPORT_OUTPUT_PATH = Path("reports/benchmark_operational_report.json")
 
+# Artefactos no versionados imprescindibles para el gate operacional.
+# Sin ellos el resultado no es evaluable; se omite (no se aprueba) el gate.
+_ARTEFACTOS_REQUERIDOS = (
+    BENCHMARK_MANIFEST_PATH,
+    CHECKPOINT_PATH,
+    ONNX_PATH,
+    CALIBRATION_JSON_PATH,
+    MODEL_MANIFEST_PATH,
+    ZONAS_SPLIT_PATH,
+    GROUND_TRUTH_PATH,
+)
+_FALTANTES = [str(ruta) for ruta in _ARTEFACTOS_REQUERIDOS if not ruta.is_file()]
+pytestmark = pytest.mark.skipif(
+    bool(_FALTANTES),
+    reason=(
+        "Gate operacional omitido: faltan artefactos no versionados ("
+        + ", ".join(_FALTANTES)
+        + "). Regenerar con `python scripts/run_phase1_and_2.py` y "
+        "`python scripts/export_onnx.py`."
+    ),
+)
+
 
 def _sha256_file(path: Path) -> str:
     h = hashlib.sha256()

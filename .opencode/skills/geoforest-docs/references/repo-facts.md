@@ -63,7 +63,7 @@ Verificado el 2026-10-20 en el checkout local.
 ## Comandos de verificación
 
 ```bash
-source venv/bin/activate
+source .venv/bin/activate
 python --version
 python -m pytest tests/ --collect-only -q | tail -1
 python - <<'PY'

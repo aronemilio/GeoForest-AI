@@ -213,6 +213,13 @@ _ESTILO_TACTICO_CSS = """
     padding: 10px 18px;
     font-weight: 600;
   }
+  /* Ocultar botones de deploy y menú innecesario de Streamlit Cloud */
+  header[data-testid="stHeader"] .stDeployButton,
+  [data-testid="stDeployButton"],
+  button[data-testid="stBaseButton-header"],
+  .stDeployButton {
+    display: none !important;
+  }
   /* Animación de entrada fluida y suave sin saltos ni bloqueo de interfaz */
   @keyframes gfFluidReveal {
     0% {

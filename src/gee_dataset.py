@@ -13,7 +13,7 @@ Estructura de salida exacta esperada por ``src/dataset.py``::
 
 Uso desde terminal::
 
-    ./venv/bin/python src/gee_dataset.py --project geoforest-ai-512500
+    .venv/bin/python src/gee_dataset.py --project geoforest-ai-512500
 """
 
 from __future__ import annotations
@@ -1061,7 +1061,7 @@ def main() -> int:
         "--max-cloud",
         type=float,
         default=40.0,
-        help="Nubosidad máxima (%) para seleccionar escenas de cada zona (defecto: 40).",
+        help="Nubosidad máxima en porcentaje para seleccionar escenas de cada zona (defecto: 40).",
     )
     args = parser.parse_args()
 

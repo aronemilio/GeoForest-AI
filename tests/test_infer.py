@@ -466,7 +466,11 @@ def test_extract_alerts_with_calibrated_map() -> None:
 
 def test_catalogo_escenas_satelitales_reales() -> None:
     """Verifica que el catálogo de escenas satelitales reales cargue tensores válidos."""
-    from app.services.copernicus import CATALOGO_ESCENAS_REALES, cargar_escena_satelital_seleccionada
+    from app.services.copernicus import (
+        CATALOGO_ESCENAS_REALES,
+        cargar_escena_satelital_seleccionada,
+        escena_real_disponible,
+    )
 
     assert len(CATALOGO_ESCENAS_REALES) >= 5
     for clave, meta in CATALOGO_ESCENAS_REALES.items():
@@ -477,7 +481,11 @@ def test_catalogo_escenas_satelitales_reales() -> None:
         assert tensor.ndim == 3
         assert tensor.shape[0] == 6  # 6 canales multitemporales (T0: B4,B8,B11; T1: B4,B8,B11)
         assert tensor.dtype == np.float32
-        assert meta_escena["es_satelital_real"] is True
+        if escena_real_disponible(clave):
+            assert meta_escena["es_satelital_real"] is True
+        else:
+            assert meta_escena["es_satelital_real"] is False
+            assert meta_escena.get("es_simulado") is True
         assert -90.0 <= meta_escena["lat"] <= 90.0
         assert -180.0 <= meta_escena["lon"] <= 180.0
         assert len(nombre) > 0

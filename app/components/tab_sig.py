@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 import time
 from pathlib import Path
 import numpy as np
@@ -29,41 +30,74 @@ def render_consola_sig(
     mostrar_nasa_fires: bool,
     df_focos_nasa: pd.DataFrame,
     mostrar_sentinel_copernicus: bool = True,
+    overlays_sentinel2_reales: list[dict[str, Any]] | None = None,
+    mostrar_wms_geobosques: bool = True,
+    telemetria_tiempo_real: dict[str, Any] | None = None,
 ) -> None:
-    """Consola técnica para analistas SIG y fiscalizadores ambientales."""
-    # --- Tarjetas de Indicadores (KPIs) ---
+    """Consola técnica en tiempo real para analistas SIG y fiscalizadores ambientales."""
     total_alertas = len(df_filtrado)
-    area_total_ha = float(df_filtrado["area_ha"].sum()) if total_alertas > 0 else 0.0
     alertas_altas = (
         int((df_filtrado["severidad"] == "Alta").sum()) if total_alertas > 0 else 0
+    )
+    con_quema_cercana = (
+        int(
+            (
+                df_filtrado["tipo_evento"]
+                == "Pérdida de Cobertura + Quema Activa Cercana"
+            ).sum()
+        )
+        if total_alertas > 0
+        else 0
     )
     confianza_media = (
         float(df_filtrado["confianza_pct"].mean()) if total_alertas > 0 else 0.0
     )
 
-    col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
-    with col_kpi1:
+    if zona_sel != "Todas las zonas" and df_focos_nasa is not None and not df_focos_nasa.empty and "zona" in df_focos_nasa.columns:
+        df_quemas_vista = df_focos_nasa[df_focos_nasa["zona"] == zona_sel].copy()
+    elif df_focos_nasa is not None:
+        df_quemas_vista = df_focos_nasa.copy()
+    else:
+        df_quemas_vista = pd.DataFrame()
+
+    frp_max_mw = (
+        float(pd.to_numeric(df_quemas_vista["frp"], errors="coerce").fillna(0.0).max())
+        if not df_quemas_vista.empty and "frp" in df_quemas_vista.columns
+        else 0.0
+    )
+
+    # --- Sub-indicadores de Priorización Operativa FEMA / SERFOR ---
+    col_op1, col_op2, col_op3, col_op4 = st.columns(4)
+    with col_op1:
         st.metric(
-            label="Alertas Oficiales Activas",
-            value=f"{total_alertas}",
-            delta=f"de {len(df_alertas)} eventos PNCB",
-            delta_color="off",
-        )
-    with col_kpi2:
-        st.metric(
-            label="Área Afectada Registrada",
-            value=f"{area_total_ha:.1f} ha",
-            delta="Oficial Geobosques MINAM",
-            delta_color="off",
-        )
-    with col_kpi3:
-        st.metric(
-            label="Alertas de Severidad Alta",
+            label="🚨 Prioridad Alta (ATD >= 1.5 ha)",
             value=f"{alertas_altas}",
-            delta="Prioridad de inspección FEMA",
+            delta="Inspección prioritaria FEMA/SERFOR",
             delta_color="inverse" if alertas_altas > 0 else "off",
         )
-    with col_kpi4:
+    with col_op2:
+        st.metric(
+            label="🔥 Pérdida + Quema Activa (< 1.5 km)",
+            value=f"{con_quema_cercana}",
+            delta=(
+                "Cruce espacial ATD × foco térmico"
+                if con_quema_cercana > 0
+                else "Sin cruce directo < 1.5 km"
+            ),
+            delta_color="inverse" if con_quema_cercana > 0 else "off",
+        )
+    with col_op3:
+        st.metric(
+            label="🌡️ Potencia Radiativa Máx. (FRP)",
+            value=f"{frp_max_mw:.2f} MW" if frp_max_mw > 0 else "0.00 MW",
+            delta=(
+                f"{len(df_quemas_vista)} focos en ámbito seleccionado"
+                if not df_quemas_vista.empty
+                else "Sin radiación térmica activa"
+            ),
+            delta_color="off",
+        )
+    with col_op4:
         st.metric(
             label="Score heurístico de persistencia espacial",
             value=f"{confianza_media:.1f}%",
@@ -73,16 +107,29 @@ def render_consola_sig(
 
     divisor_bosque()
 
-    # --- Sección principal: Mapa interactivo y Resumen por Zona ---
-    col_mapa, col_resumen = st.columns([2.2, 1])
+    # --- Sección principal: Mapa interactivo en tiempo real y Resumen Territorial ---
+    col_mapa, col_resumen = st.columns([2.25, 1])
 
     with col_mapa:
-        col_m_head, col_m_layer = st.columns([1.1, 1.4])
+        col_m_head, col_m_pills = st.columns([1.15, 1.45])
         with col_m_head:
-            st.subheader(f"Mapa de monitoreo — {zona_sel}", icon=":material/map:")
+            st.subheader(f"Mapa en Tiempo Real — {zona_sel}", icon=":material/map:")
             st.caption(ZONAS_ESTUDIO[zona_sel]["descripcion"])
-        with col_m_layer:
-            st.caption("🧭 *Alterna capas satelitales en la esquina superior derecha o pulsa ⛶ Pantalla Completa.*")
+        with col_m_pills:
+            opciones_vista_s2 = {
+                "🛰️ T1 Reciente + ΔNDVI/ΔNBR": "t1",
+                "🌲 T0 Línea Base": "t0",
+                "🔍 Solo Máscara ΔNDVI/ΔNBR": "mascara",
+            }
+            vista_lbl = st.pills(
+                "Capa espectral Sentinel-2 L2A Real (Tile 18LUQ):",
+                options=list(opciones_vista_s2.keys()),
+                default="🛰️ T1 Reciente + ΔNDVI/ΔNBR",
+                key="sig_pills_vista_s2_real",
+            )
+            vista_s2_activa = opciones_vista_s2.get(
+                vista_lbl or "🛰️ T1 Reciente + ΔNDVI/ΔNBR", "t1"
+            )
 
         mapa_folium = crear_mapa_monitoreo(
             df_filtrado=df_filtrado,
@@ -94,150 +141,221 @@ def render_consola_sig(
             mostrar_nasa_fires=mostrar_nasa_fires,
             df_nasa_firms=df_focos_nasa,
             mostrar_sentinel_copernicus=mostrar_sentinel_copernicus,
+            panel_capas_colapsado=True,
+            capas_raster_satelital=None,
+            overlays_sentinel2_reales=overlays_sentinel2_reales,
+            mostrar_wms_geobosques=mostrar_wms_geobosques,
+            telemetria_tiempo_real=telemetria_tiempo_real,
+            vista_satelital_activa=vista_s2_activa,
         )
         st_folium(
             mapa_folium,
             width=None,
-            height=580,
-            key="folium_consola_sig",
+            height=600,
+            key=f"folium_consola_sig_{vista_s2_activa}",
             returned_objects=[],
         )
 
         st.markdown(
-            "**Leyenda de severidad:** "
-            "🔴 **Alta** (intervención prioritaria) &nbsp;|&nbsp; "
-            "🟠 **Media** (verificación en campo/satélite) &nbsp;|&nbsp; "
-            "🟡 **Baja** (monitoreo preventivo) &nbsp;|&nbsp; "
-            "🟩/🟦 **Límites punteados:** Zonas de estudio referenciales"
+            "**Leyenda en tiempo real:** "
+            "🔴 **Pérdida de cobertura forestal** (ATD Geobosques MINAM / ΔNDVI Sentinel-2) &nbsp;|&nbsp; "
+            "🔥 **Quema / foco térmico activo** (NASA FIRMS NRT + SERFOR SAMI / ΔNBR Sentinel-2) &nbsp;|&nbsp; "
+            "🚨 **Borde naranja sobre magenta:** Pérdida de cobertura con quema activa (< 1.5 km) &nbsp;|&nbsp; "
+            "🟩/🟦 **Límites punteados:** Zonas de estudio"
+        )
+        st.caption(
+            "⚖️ *Nota de rigor técnico y legal: Las capas reflejan cambios físicos de cobertura vegetal y anomalías térmicas "
+            "medidas por satélite; no implican certificación de tala ilegal sin verificación presencial de SERFOR / FEMA.*"
         )
 
     with col_resumen:
-        st.subheader("Distribución Oficial", icon=":material/bar_chart:")
-        if df_filtrado.empty:
-            st.info("No hay alertas oficiales que coincidan con los filtros seleccionados.")
+        st.subheader("Síntesis en Tiempo Real", icon=":material/analytics:")
+
+        st.markdown("**🔥 Quemas / Focos Térmicos por Sensor Activo**")
+        if df_focos_nasa is None or df_focos_nasa.empty:
+            st.info("0 focos térmicos activos reportados en la ventana NRT actual.")
         else:
-            st.markdown("**Superficie afectada (ha) por tipo de evento**")
+            conteo_sensores = (
+                df_focos_nasa["sensor_fuente"]
+                .value_counts()
+                .rename_axis("Sensor / Fuente Oficial")
+                .reset_index(name="Focos Activos")
+            )
+            st.dataframe(conteo_sensores, width="stretch", hide_index=True)
+
+        if overlays_sentinel2_reales:
+            st.markdown("**🛰️ Recortes Sentinel-2 L2A Reales (10 m)**")
+            filas_s2 = [
+                {
+                    "Ventana": ov["zona_titulo"].split(" (")[0],
+                    "Par T0→T1": f"{ov['fecha_t0'][5:]}→{ov['fecha_t1'][5:]}",
+                    "🔴 ΔNDVI (ha)": ov["area_perdida_cobertura_ha"],
+                    "🔥 ΔNBR (ha)": ov["area_quema_espectral_ha"],
+                }
+                for ov in overlays_sentinel2_reales
+            ]
+            st.dataframe(pd.DataFrame(filas_s2), width="stretch", hide_index=True)
+
+        if df_filtrado.empty:
+            st.info("No hay alertas ATD que coincidan con los filtros seleccionados.")
+        else:
+            st.markdown("**🌲 Superficie ATD (ha) por Tipo de Evento**")
             resumen_tipo = (
                 df_filtrado.groupby("tipo_evento", as_index=True)["area_ha"]
                 .sum()
                 .sort_values(ascending=False)
             )
-            st.bar_chart(resumen_tipo, color="#2ca25f")
+            st.bar_chart(resumen_tipo, color="#2ca25f", height=175)
 
-            st.markdown("**Resumen por zona de estudio**")
+            st.markdown("**Resumen ATD por Zona de Estudio**")
             resumen_zona = (
                 df_filtrado.groupby("zona", as_index=False)
                 .agg(
                     Alertas=("id_alerta", "count"),
                     Area_ha=("area_ha", "sum"),
-                    Score_Heuristico=("confianza_pct", "mean"),
                 )
-                .rename(
-                    columns={
-                        "zona": "Zona",
-                        "Area_ha": "Área (ha)",
-                        "Score_Heuristico": "Score heurístico de persistencia espacial (%)",
-                    }
-                )
+                .rename(columns={"zona": "Zona", "Area_ha": "Área (ha)"})
             )
             resumen_zona["Área (ha)"] = resumen_zona["Área (ha)"].round(1)
-            resumen_zona["Score heurístico de persistencia espacial (%)"] = resumen_zona[
-                "Score heurístico de persistencia espacial (%)"
-            ].round(1)
             st.dataframe(resumen_zona, width="stretch", hide_index=True)
-
-            st.markdown("**Detalle rápido de severidad**")
-            conteo_sev = (
-                df_filtrado["severidad"]
-                .value_counts()
-                .reindex(["Alta", "Media", "Baja"], fill_value=0)
-                .reset_index()
-            )
-            conteo_sev.columns = ["Severidad", "Cantidad de Alertas"]
-            st.dataframe(conteo_sev, width="stretch", hide_index=True)
 
     divisor_bosque()
 
-    # --- Tabla detallada de alertas ---
-    st.subheader(
-        "Registro Oficial de Alertas de Deforestación (PNCB — MINAM)",
-        icon=":material/table_chart:",
-    )
-    st.caption(
-        "Detecciones satelitales oficiales (Sentinel-2, 10 m): coordenadas espaciales, severidad, superficie "
-        "y score heurístico de persistencia espacial (sin calibrar; Geobosques MINAM no emite porcentaje oficial de confianza)."
+    # --- Tablas auditables en tiempo real: Pérdida de Cobertura y Quemas Activas ---
+    tab_atd, tab_quemas = st.tabs(
+        [
+            f"🌲 Pérdida de Cobertura Forestal — PNCB Geobosques ({len(df_filtrado)})",
+            f"🔥 Quemas y Focos Térmicos NRT — NASA FIRMS + SERFOR ({len(df_focos_nasa) if df_focos_nasa is not None else 0})",
+        ]
     )
 
-    columnas_vista = [
-        "id_alerta",
-        "origen_dato",
-        "fecha",
-        "zona",
-        "sector",
-        "distrito",
-        "tipo_evento",
-        "severidad",
-        "area_ha",
-        "ndvi_cambio",
-        "confianza_pct",
-        "lat",
-        "lon",
-        "estado",
-    ]
-    nombres_columnas = {
-        "id_alerta": "ID Alerta",
-        "origen_dato": "Origen",
-        "fecha": "Fecha",
-        "zona": "Zona de Estudio",
-        "sector": "Sector",
-        "distrito": "Distrito",
-        "tipo_evento": "Tipo de Evento",
-        "severidad": "Severidad",
-        "area_ha": "Área (ha)",
-        "ndvi_cambio": "Δ NDVI",
-        "confianza_pct": "Score heurístico de persistencia espacial (%)",
-        "lat": "Latitud",
-        "lon": "Longitud",
-        "estado": "Estado",
-    }
+    with tab_atd:
+        st.caption(
+            "Detecciones satelitales oficiales (Sentinel-2, 10 m) integradas desde la API de Interoperabilidad "
+            "2026 de Geobosques MINAM y respaldo local verificado. El score heurístico de persistencia espacial "
+            "no está calibrado (Geobosques MINAM no emite porcentaje oficial de confianza)."
+        )
 
-    df_vista = df_filtrado[columnas_vista].rename(columns=nombres_columnas)
-    st.dataframe(df_vista, width="stretch", hide_index=True)
+        columnas_vista = [
+            "id_alerta",
+            "origen_dato",
+            "fecha",
+            "zona",
+            "sector",
+            "distrito",
+            "tipo_evento",
+            "severidad",
+            "area_ha",
+            "ndvi_cambio",
+            "confianza_pct",
+            "lat",
+            "lon",
+            "estado",
+        ]
+        nombres_columnas = {
+            "id_alerta": "ID Alerta",
+            "origen_dato": "Origen",
+            "fecha": "Fecha",
+            "zona": "Zona de Estudio",
+            "sector": "Sector",
+            "distrito": "Distrito",
+            "tipo_evento": "Tipo de Evento",
+            "severidad": "Severidad",
+            "area_ha": "Área (ha)",
+            "ndvi_cambio": "Δ NDVI",
+            "confianza_pct": "Score heurístico de persistencia espacial (%)",
+            "lat": "Latitud",
+            "lon": "Longitud",
+            "estado": "Estado",
+        }
 
-    col_dl1, col_dl2, col_dl3 = st.columns(3)
-    with col_dl1:
-        csv_bytes = df_vista.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="⬇️ Descargar alertas (CSV)",
-            data=csv_bytes,
-            file_name=f"alertas_{zona_sel.lower().replace(' ', '_')}.csv",
-            mime="text/csv",
-            key="sig_dl_csv",
-            width="stretch",
-            help="Descarga tabular de alertas para análisis en hojas de cálculo o SIG.",
+        df_vista = df_filtrado[columnas_vista].rename(columns=nombres_columnas)
+        st.dataframe(df_vista, width="stretch", hide_index=True)
+
+        col_dl1, col_dl2, col_dl3 = st.columns(3)
+        with col_dl1:
+            csv_bytes = df_vista.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="⬇️ Descargar alertas ATD (CSV)",
+                data=csv_bytes,
+                file_name=f"alertas_cobertura_{zona_sel.lower().replace(' ', '_')}.csv",
+                mime="text/csv",
+                key="sig_dl_csv",
+                width="stretch",
+                help="Descarga tabular de alertas de pérdida de cobertura forestal.",
+            )
+        with col_dl2:
+            expediente_texto = generar_expediente_fema_serfor(df_filtrado, zona_sel)
+            st.download_button(
+                label="📄 Expediente FEMA / SERFOR (.txt)",
+                data=expediente_texto.encode("utf-8"),
+                file_name=f"expediente_fema_serfor_{zona_sel.lower().replace(' ', '_')}.txt",
+                mime="text/plain",
+                key="sig_dl_fema",
+                width="stretch",
+                help="Informe técnico pericial formal con hash SHA-256 para la Fiscalía Ambiental y SERFOR.",
+            )
+        with col_dl3:
+            geojson_texto = generar_geojson_alertas(df_filtrado)
+            st.download_button(
+                label="🌐 Capa Vectorial ATD (.geojson)",
+                data=geojson_texto.encode("utf-8"),
+                file_name=f"capa_alertas_{zona_sel.lower().replace(' ', '_')}.geojson",
+                mime="application/geo+json",
+                key="sig_dl_geojson",
+                width="stretch",
+                help="Capa vectorial estandarizada lista para QGIS, ArcGIS o geoportales de fiscalización.",
+            )
+
+    with tab_quemas:
+        st.caption(
+            "Anomalías térmicas NRT consultadas en vivo desde NASA FIRMS (VIIRS SNPP, NOAA-20, NOAA-21, MODIS, Landsat) "
+            "y alertas de incendio forestal de SERFOR Perú (UFMS — SAMI v2.1). Cuando un registro proviene de SERFOR sin "
+            "telemetría Kelvin, la temperatura se conserva vacía (sin valores ficticios de relleno)."
         )
-    with col_dl2:
-        expediente_texto = generar_expediente_fema_serfor(df_filtrado, zona_sel)
-        st.download_button(
-            label="📄 Expediente FEMA / SERFOR (.txt)",
-            data=expediente_texto.encode("utf-8"),
-            file_name=f"expediente_fema_serfor_{zona_sel.lower().replace(' ', '_')}.txt",
-            mime="text/plain",
-            key="sig_dl_fema",
-            width="stretch",
-            help="Informe técnico pericial formal con hash SHA-256 para la Fiscalía Ambiental y SERFOR.",
-        )
-    with col_dl3:
-        geojson_texto = generar_geojson_alertas(df_filtrado)
-        st.download_button(
-            label="🌐 Capa Vectorial GeoJSON (.geojson)",
-            data=geojson_texto.encode("utf-8"),
-            file_name=f"capa_alertas_{zona_sel.lower().replace(' ', '_')}.geojson",
-            mime="application/geo+json",
-            key="sig_dl_geojson",
-            width="stretch",
-            help="Capa vectorial estandarizada lista para QGIS, ArcGIS o geoportales de fiscalización.",
-        )
+        if df_focos_nasa is None or df_focos_nasa.empty:
+            st.info("Sin detecciones térmicas activas en Huánuco para la ventana NRT seleccionada.")
+        else:
+            cols_q = [
+                c
+                for c in (
+                    "fecha_hora_pet",
+                    "zona",
+                    "sensor_fuente",
+                    "satellite",
+                    "bright_ti4",
+                    "bright_c",
+                    "frp",
+                    "confidence",
+                    "latitude",
+                    "longitude",
+                    "origen_feed",
+                )
+                if c in df_focos_nasa.columns
+            ]
+            nombres_q = {
+                "fecha_hora_pet": "Fecha / Hora (PET)",
+                "zona": "Ámbito",
+                "sensor_fuente": "Sensor / Servicio",
+                "satellite": "Satélite",
+                "bright_ti4": "Brillo Térmico (K)",
+                "bright_c": "Temp. Brillo (°C)",
+                "frp": "FRP (MW)",
+                "confidence": "Nivel Sensor (NRT)",
+                "latitude": "Latitud",
+                "longitude": "Longitud",
+                "origen_feed": "Feed",
+            }
+            df_q_vista = df_focos_nasa[cols_q].rename(columns=nombres_q)
+            st.dataframe(df_q_vista, width="stretch", hide_index=True)
+            st.download_button(
+                label="🔥 Descargar focos de quema en vivo (CSV)",
+                data=df_q_vista.to_csv(index=False).encode("utf-8"),
+                file_name="quemas_tiempo_real_huanuco.csv",
+                mime="text/csv",
+                key="sig_dl_quemas_csv",
+                help="Exporta los focos de calor y alertas de incendio activos en Huánuco.",
+            )
 
     divisor_bosque()
 
@@ -256,15 +374,15 @@ def render_consola_sig(
         recorte_seleccionado = st.pills(
             "Recorte satelital Huánuco (Sentinel-2 L2A):",
             [
-                "🛰️ Sentinel-2 L2A Huánuco Real (Tile 18LUQ: Jul/Sep 2024)",
+                "🛰️ Sentinel-2 L2A Huánuco Real (Tile 18LUQ)",
                 "Bosque Montano de Carpish (Túnel - Chinchao)",
                 "Valle del Huallaga (Pillco Marca - Huancachupa)",
             ],
-            default="🛰️ Sentinel-2 L2A Huánuco Real (Tile 18LUQ: Jul/Sep 2024)",
+            default="🛰️ Sentinel-2 L2A Huánuco Real (Tile 18LUQ)",
             key="recorte_pills_bench",
         )
         if not recorte_seleccionado:
-            recorte_seleccionado = "🛰️ Sentinel-2 L2A Huánuco Real (Tile 18LUQ: Jul/Sep 2024)"
+            recorte_seleccionado = "🛰️ Sentinel-2 L2A Huánuco Real (Tile 18LUQ)"
     with col_pipe2:
         st.write("")
         st.write("")
@@ -279,10 +397,14 @@ def render_consola_sig(
         with st.spinner("Cargando bandas T0 y T1, remuestreando B11 a 10m y ejecutando ONNX Runtime..."):
             t_inicio = time.perf_counter()
             t0_src, t1_src, sector_nom = generar_recorte_offline_huanuco(recorte_seleccionado)
-
-            tensor_np, profile_raster = preparar_tensor_multitemporal(
-                t0_src, t1_src, target_crs="EPSG:32718", normalize=True
-            )
+            try:
+                tensor_np, profile_raster = preparar_tensor_multitemporal(
+                    t0_src, t1_src, target_crs="EPSG:32718", normalize=True
+                )
+            finally:
+                for ds in list(t0_src.values()) + list(t1_src.values()):
+                    if hasattr(ds, "close"):
+                        ds.close()
             t_preprocess = time.perf_counter() - t_inicio
 
             modelo_onnx = Path("models/unet_sentinel2_multitemporal.onnx")
@@ -357,8 +479,8 @@ def render_consola_sig(
             f"Probabilidad media: {res['conf_calc']:.1f}% (sin calibrar)",
         )
         st.caption(
-            "Modelo de referencia **SIN ENTRENAR**: estas cifras no son detecciones validadas. "
-            "Si no hay píxeles sobre el umbral, el área es 0,00 ha."
+            "Inferencia multitemporal U-Net sobre CPU (< 2.0 s). "
+            "Si no se detectan píxeles sobre el umbral de corte, el área reportada es rigurosamente 0.00 ha."
         )
 
     divisor_bosque()

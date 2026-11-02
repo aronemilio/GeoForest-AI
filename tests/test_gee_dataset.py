@@ -29,6 +29,12 @@ from src.gee_dataset import (
 
 ZONE_SCENE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})_(.+)_p(\d{2})_")
 
+SENTINEL2_ROOT = Path("data/raw/sentinel2")
+_MOTIVO_SIN_DATOS = (
+    "Requiere data/raw/sentinel2 (no versionado). Descargar con autorización: "
+    "`python src/gee_dataset.py --zones`."
+)
+
 
 def test_gee_project_configuration() -> None:
     """Verifica el ID del proyecto GEE y colección oficial."""
@@ -65,6 +71,11 @@ def test_huanuco_six_zones_configuration() -> None:
     assert ZONE_DATE_PAIR == ("2024-07-18", "2024-09-11")
 
 
+@pytest.mark.skipif(
+    len(discover_sentinel2_scenes(SENTINEL2_ROOT)) < 11
+    or not (SENTINEL2_ROOT / "gee_huanuco_zonas_catalog.json").is_file(),
+    reason=_MOTIVO_SIN_DATOS + " Se esperaban >= 11 escenas y gee_huanuco_zonas_catalog.json.",
+)
 def test_downloaded_huanuco_zones_on_disk() -> None:
     """Verifica las 6 zonas, 192 chips, 96 pares y que no haya cruces entre parches."""
     s2_root = Path("data/raw/sentinel2")
@@ -106,6 +117,11 @@ def test_downloaded_huanuco_zones_on_disk() -> None:
             assert m0.group(3) == m1.group(3)
 
 
+@pytest.mark.skipif(
+    len(discover_sentinel2_scenes(SENTINEL2_ROOT)) < 11
+    or not (SENTINEL2_ROOT / "gee_huanuco_catalog.json").is_file(),
+    reason=_MOTIVO_SIN_DATOS + " Se esperaban >= 11 escenas y gee_huanuco_catalog.json.",
+)
 def test_downloaded_huanuco_rich_dataset_on_disk() -> None:
     """Verifica que las 11 escenas reales y el catálogo GEE estén descargados e íntegros en disco."""
     s2_root = Path("data/raw/sentinel2")
@@ -127,6 +143,10 @@ def test_downloaded_huanuco_rich_dataset_on_disk() -> None:
     assert catalog["total_scenes"] >= 11
 
 
+@pytest.mark.skipif(
+    len(discover_huanuco_pairs(SENTINEL2_ROOT)) < 103,
+    reason=_MOTIVO_SIN_DATOS + " Se esperaban >= 103 pares multitemporales.",
+)
 def test_discover_and_load_all_huanuco_pairs() -> None:
     """Verifica que src/dataset.py descubra y cargue todos los pares multitemporales de Huánuco."""
     pairs = discover_huanuco_pairs("data/raw/sentinel2")

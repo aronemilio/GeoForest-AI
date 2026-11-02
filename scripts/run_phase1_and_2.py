@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import sys
 from pathlib import Path
 
 import geopandas as gpd
@@ -16,6 +17,11 @@ from rasterio import features
 from scipy.ndimage import binary_closing, binary_opening, uniform_filter
 from shapely.geometry import box, mapping, shape
 from shapely.ops import unary_union
+
+# Permitir la ejecución directa `python scripts/run_phase1_and_2.py` desde la raíz
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.crs_utils import assert_raster_utm18s
 from src.data.indexer import build_index

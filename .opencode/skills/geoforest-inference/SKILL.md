@@ -32,7 +32,7 @@ description: Guía para src/infer.py y tests/test_infer.py de GeoForest-AI (ONNX
 2. Haz el cambio con pruebas sintéticas; no dependas de red ni de datos reales.
 3. Ejecuta:
    ```bash
-   source venv/bin/activate
+   source .venv/bin/activate
    python -m pytest tests/test_infer.py -q
    ```
 4. Si tocas la UI, aplica también el skill `geoforest-ui`.

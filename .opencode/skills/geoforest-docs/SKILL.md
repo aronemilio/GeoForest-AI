@@ -25,7 +25,7 @@ description: Guía para mantener README.md, AGENTS.md y docs/ de GeoForest-AI si
 1. Verifica el estado real:
    ```bash
    git status --short
-   source venv/bin/activate
+   source .venv/bin/activate
    python --version
    python -m pytest tests/ --collect-only -q | tail -1
    stat -c '%s %n' models/unet_geoforest.onnx models/unet_best.pth

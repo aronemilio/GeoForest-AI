@@ -16,8 +16,10 @@ from app.services.copernicus import (
     cargar_escena_satelital_seleccionada,
     consultar_catalogo_copernicus,
     descargar_escena_sentinel2,
+    escena_real_disponible,
 )
 from app.services.onnx_demo import (
+    calcular_telemetria_espectral_tensor,
     matriz_a_imagen_heatmap,
     matriz_a_imagen_mascara,
     matriz_a_imagen_ndvi,
@@ -46,16 +48,26 @@ def render_tab_laboratorio_inferencia() -> None:
         "Sentinel-2 (10m) en Huánuco (Carpish y Valle del Huallaga). Mide latencia de CPU, extrae polígonos "
         "vectoriales y calcula superficies afectadas con base matemática formal."
     )
-    st.info(
-        "🛰️ **Modo Operativo Satelital 100% Real**: Los tensores analizados corresponden a imágenes multiespectrales "
-        "Sentinel-2 L2A (10 m/px) adquiridas por la Agencia Espacial Europea (ESA / Copernicus CDSE) "
-        "sobre Huánuco y reservas forestales de referencia. Inferencia ejecutada mediante red neuronal U-Net en ONNX Runtime (CPU).",
-        icon=":material/satellite_alt:",
-    )
+    if escena_real_disponible():
+        st.info(
+            "🛰️ **Modo Operativo Satelital 100% Real**: Los tensores analizados corresponden a imágenes multiespectrales "
+            "Sentinel-2 L2A (10 m/px) adquiridas por la Agencia Espacial Europea (ESA / Copernicus CDSE) "
+            "sobre Huánuco y reservas forestales de referencia. Inferencia ejecutada mediante red neuronal U-Net en ONNX Runtime (CPU).",
+            icon=":material/satellite_alt:",
+        )
+    else:
+        st.warning(
+            "🧪 **Modo de Calibración / Demostración Sintética**: No se detectaron GeoTIFFs Sentinel-2 L2A en `data/raw/sentinel2`. "
+            "La inferencia U-Net sobre CPU y la extracción vectorial operan con tensores sintéticos deterministas calibrados. "
+            "Para activar el procesamiento satelital 100% real, consulte y descargue el par Sentinel-2 desde la consola inferior.",
+            icon=":material/science:",
+        )
 
-    modelo_onnx_path = Path("models/unet_sentinel2_huanuco.onnx")
+    modelo_onnx_path = Path("models/unet_sentinel2_multitemporal.onnx")
     if not modelo_onnx_path.exists():
-        modelo_onnx_path = Path("models/unet_sentinel2_multitemporal.onnx")
+        modelo_onnx_path = Path("models/unet_geoforest.onnx")
+    if not modelo_onnx_path.exists():
+        modelo_onnx_path = Path("models/unet_sentinel2_huanuco.onnx")
 
     if not modelo_onnx_path.exists():
         st.error(
@@ -77,7 +89,7 @@ def render_tab_laboratorio_inferencia() -> None:
             f_fin = st.date_input("Fecha Fin", value=pd.to_datetime("2024-10-31"), key="cop_f_fin")
         with c_q3:
             st.write("")
-            btn_buscar_cop = st.button("🔍 Consultar Catálogo", key="btn_query_copernicus", use_container_width=True)
+            btn_buscar_cop = st.button("🔍 Consultar Catálogo", key="btn_query_copernicus", width="stretch")
 
         if btn_buscar_cop or "catalogo_copernicus_cache" in st.session_state:
             if btn_buscar_cop:
@@ -93,7 +105,7 @@ def render_tab_laboratorio_inferencia() -> None:
                 st.success(f"Encontradas {len(escenas)} escenas satelitales Sentinel-2 L2A sobre Huánuco (Tile 18LUQ).")
                 df_esc = pd.DataFrame(escenas)[["id", "fecha", "plataforma", "tile", "nubes_pct"]]
                 df_esc.columns = ["ID Escena", "Fecha Adquisición", "Plataforma", "Tile MGRS", "Cobertura Nubosa (%)"]
-                st.dataframe(df_esc, use_container_width=True, hide_index=True)
+                st.dataframe(df_esc, width="stretch", hide_index=True)
 
                 col_dl1, col_dl2 = st.columns([2.5, 1])
                 with col_dl1:
@@ -107,7 +119,7 @@ def render_tab_laboratorio_inferencia() -> None:
                 with col_dl2:
                     st.write("")
                     st.write("")
-                    btn_descargar = st.button("📥 Descargar GeoTIFFs", key="btn_dl_copernicus", use_container_width=True)
+                    btn_descargar = st.button("📥 Descargar GeoTIFFs", key="btn_dl_copernicus", width="stretch")
 
                 if btn_descargar:
                     escena_sel = escenas[sel_idx]
@@ -123,10 +135,10 @@ def render_tab_laboratorio_inferencia() -> None:
     if "escena_satelital_activa" not in st.session_state:
         st.session_state["escena_satelital_activa"] = "huanuco_completa"
 
-    st.markdown("#### 🛰️ Consola de Misión Satelital — Selección de Escena Multitemporal Real")
+    st.markdown("#### 🛰️ Consola de Misión Satelital — Selección de Escena Multitemporal")
     st.caption(
-        "Catálogo operativo de escenas satelitales multitemporales **100% reales** (Copernicus Sentinel-2 L2A y ESA OSCD). "
-        "Selecciona una misión satelital para cargar sus bandas espectrales (B04 Red, B08 NIR, B11 SWIR) "
+        "Catálogo de escenas satelitales multitemporales (Copernicus Sentinel-2 L2A y ESA OSCD). "
+        "Selecciona una misión para cargar sus bandas espectrales (B04 Red, B08 NIR, B11 SWIR) "
         "y procesarlas con la red neuronal U-Net:"
     )
 
@@ -142,7 +154,7 @@ def render_tab_laboratorio_inferencia() -> None:
             index=idx_def,
             format_func=lambda k: CATALOGO_ESCENAS_REALES[k]["titulo"],
             key="select_escena_real",
-            help="Todas las opciones corresponden a pasadas orbitales Sentinel-2 reales calibradas a reflectancia de superficie (L2A).",
+            help="Selección de par satelital multitemporal calibrado a reflectancia de superficie.",
         )
         if clave_activa != st.session_state.get("escena_satelital_activa"):
             st.session_state["escena_satelital_activa"] = clave_activa
@@ -151,12 +163,13 @@ def render_tab_laboratorio_inferencia() -> None:
     info_escena = CATALOGO_ESCENAS_REALES[clave_activa]
     tensor_5c, meta_parche, nombre_sector = cargar_escena_satelital_seleccionada(clave_activa)
     sector_idx = clave_activa
+    telem_espectral = calcular_telemetria_espectral_tensor(tensor_5c, pixel_size_m=meta_parche.get("pixel_size_m", 10.0))
 
     with col_status:
         st.write("")
         st.markdown(
             f"""
-            <div style="background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.4); border-radius: 8px; padding: 10px; text-align: center;">
+            <div style="background: {info_escena['color']}18; border: 1px solid {info_escena['color']}66; border-radius: 8px; padding: 10px; text-align: center;">
                 <span style="font-weight: 700; color: {info_escena['color']}; font-size: 13px;">{info_escena['badge']}</span>
                 <div style="font-size: 11px; color: #94a3b8; margin-top: 3px;">📍 {info_escena['coords']}</div>
             </div>
@@ -166,21 +179,29 @@ def render_tab_laboratorio_inferencia() -> None:
 
     # Panel de Telemetría Orbital y Previsualización Espectral Multitemporal
     with st.container():
-        c_telem, c_prev0, c_prev1 = st.columns([1.3, 1.35, 1.35])
+        c_telem, c_prev0, c_prev1 = st.columns([1.4, 1.3, 1.3])
         with c_telem:
             st.markdown(
                 f"""
-                <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 12px; height: 100%;">
-                    <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #10b981; font-weight: 700; margin-bottom: 6px;">🛰️ Telemetría de Misión</div>
-                    <div style="font-size: 12px; color: #e2e8f0; margin-bottom: 4px;"><b>Plataforma:</b> {info_escena['satelite']}</div>
-                    <div style="font-size: 12px; color: #e2e8f0; margin-bottom: 4px;"><b>Resolución:</b> {info_escena['resolucion']} (Bandas B4, B8, B11)</div>
-                    <div style="font-size: 12px; color: #e2e8f0; margin-bottom: 4px;"><b>Temporalidad:</b> {info_escena['fechas']}</div>
-                    <div style="font-size: 12px; color: #e2e8f0; margin-bottom: 4px;"><b>Ámbito:</b> {info_escena['cobertura']}</div>
-                    <div style="font-size: 11px; color: #38bdf8; font-family: monospace; margin-top: 6px;">Matriz Ráster: {tensor_5c.shape[1]}×{tensor_5c.shape[2]} px · 6 canales</div>
+                <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 12px; margin-bottom: 6px;">
+                    <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #10b981; font-weight: 700; margin-bottom: 6px;">🛰️ Telemetría Espectral Computada en Vivo</div>
+                    <div style="font-size: 12px; color: #e2e8f0; margin-bottom: 3px;"><b>Misión:</b> {info_escena['satelite']}</div>
+                    <div style="font-size: 12px; color: #e2e8f0; margin-bottom: 3px;"><b>Resolución:</b> {info_escena['resolucion']} (Bandas B4, B8, B11)</div>
+                    <div style="font-size: 12px; color: #e2e8f0; margin-bottom: 3px;"><b>Temporalidad:</b> {info_escena['fechas']}</div>
+                    <div style="font-size: 12px; color: #f59e0b; margin-bottom: 4px;"><b>Diagnóstico:</b> {telem_espectral['diagnostico']}</div>
+                    <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px;">
+                        <span style="background: rgba(16, 185, 129, 0.15); border: 1px solid #10b981; color: #34d399; font-size: 11px; padding: 2px 5px; border-radius: 4px;">ΔNDVI: {telem_espectral['delta_ndvi_nucleo']:.2f}</span>
+                        <span style="background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; color: #f87171; font-size: 11px; padding: 2px 5px; border-radius: 4px;">ΔNBR: {telem_espectral['delta_nbr_nucleo']:.2f}</span>
+                        <span style="background: rgba(56, 189, 248, 0.15); border: 1px solid #38bdf8; color: #7dd3fc; font-size: 11px; padding: 2px 5px; border-radius: 4px;">Área: {telem_espectral['area_afectada_ha']} ha</span>
+                        <span style="background: rgba(168, 85, 247, 0.15); border: 1px solid #a855f7; color: #c084fc; font-size: 11px; padding: 2px 5px; border-radius: 4px;">Caída NIR: -{telem_espectral['b8_caida_pct']:.0f}%</span>
+                    </div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
+            st.caption("📊 **Firma Espectral del Tensor (Reflectancia T0 vs T1):**")
+            st.bar_chart(telem_espectral["df_firmas"].set_index("Banda Espectral"), color=["#10b981", "#ef4444"], height=130)
+
         with c_prev0:
             thumb_t0 = matriz_a_imagen_rgb(tensor_5c[1], tensor_5c[0], tensor_5c[2])
             st.image(thumb_t0, caption=f"Línea Base T0 — Falso Color ({info_escena['fechas'].split(' vs ')[0]})", width="stretch")
@@ -192,9 +213,10 @@ def render_tab_laboratorio_inferencia() -> None:
     col_p1, col_p2, col_p3 = st.columns([1.5, 1.2, 1.3])
     with col_p1:
         st.markdown(f"**Escena en Proceso:** `{info_escena['titulo']}`")
+        badge_text = "Tensor 100% Satelital Real" if meta_parche.get("es_satelital_real", False) else "Tensor Calibrado de Demostración"
         st.caption(
             f"Origen: **{info_escena['satelite']}** • Matriz: **{tensor_5c.shape[1]}×{tensor_5c.shape[2]} px** • "
-            f"Res: **{info_escena['resolucion']}** • Tensor 100% Satelital Real"
+            f"Res: **{info_escena['resolucion']}** • {badge_text}"
         )
     with col_p2:
         modo_umbral = st.radio(
@@ -255,18 +277,30 @@ def render_tab_laboratorio_inferencia() -> None:
             # 1. Cargar predictor ONNX (el grafo ONNX ya incluye Sigmoid(logits / T))
             predictor = ONNXForestPredictor(str(modelo_onnx_path), temperature=1.0)
 
+            # Adaptar canales si el modelo cargado espera 5 canales y el tensor tiene 6
+            tensor_eval = tensor_5c
+            try:
+                canales_esperados = predictor.session.get_inputs()[0].shape[1]
+                if canales_esperados == 5 and tensor_5c.shape[0] == 6:
+                    b4, b8, b11 = tensor_5c[3], tensor_5c[4], tensor_5c[5]
+                    ndvi = np.clip((b8 - b4) / (b8 + b4 + 1e-6), -1.0, 1.0).astype(np.float32)
+                    nbr = np.clip((b8 - b11) / (b8 + b11 + 1e-6), -1.0, 1.0).astype(np.float32)
+                    tensor_eval = np.stack([b4, b8, b11, ndvi, nbr], axis=0)
+            except Exception:
+                tensor_eval = tensor_5c
+
             # 2. Inferencia y cronometraje de alta precisión
             t_inicio = time.perf_counter()
 
             if "Ventana Deslizante" in modo_ejecucion:
                 prob_map = predictor.predict_sliding_window(
-                    image=tensor_5c,
+                    image=tensor_eval,
                     patch_size=128,
                     stride=64,
                     blend_mode="gaussian",
                 )
             else:
-                prob_raw = predictor.predict_proba(tensor_5c)
+                prob_raw = predictor.predict_proba(tensor_eval)
                 prob_map = np.squeeze(prob_raw)
 
             latencia_ms = (time.perf_counter() - t_inicio) * 1000.0
@@ -362,22 +396,22 @@ def render_tab_laboratorio_inferencia() -> None:
 
             with v_col1:
                 st.caption("**1. Color Falso Infrarrojo** (B8-B4-B11)")
-                st.image(img_falso_color, use_container_width=True)
+                st.image(img_falso_color, width="stretch")
                 st.caption("Vegetación sana en rojo/verde brillante; suelo expuesto en tonos oscuros.")
 
             with v_col2:
                 st.caption("**2. Índice Espectral NDVI**")
-                st.image(img_ndvi, use_container_width=True)
+                st.image(img_ndvi, width="stretch")
                 st.caption("Verde = vigor fotosintético alto; rojo = estrés o pérdida de dosel.")
 
             with v_col3:
                 st.caption(f"**3. Heatmap de {'Score Continuo (sin calibrar)' if reescalar_score else 'Probabilidad U-Net (sin calibrar)'}**")
-                st.image(img_heat, use_container_width=True)
+                st.image(img_heat, width="stretch")
                 st.caption("Gradiente continuo [0.0 a 1.0] con normalización de fondo dinámico (sin calibración probabilística).")
 
             with v_col4:
                 st.caption(f"**4. Máscara sobre Umbral** (>= {etiqueta_umbral})")
-                st.image(img_mask, use_container_width=True)
+                st.image(img_mask, width="stretch")
                 st.caption("Rojo = polígonos validados por la IA y evidencia biofísica.")
 
             # 7. Tabla pericial de polígonos extraídos

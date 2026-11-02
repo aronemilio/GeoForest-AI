@@ -32,7 +32,7 @@ description: "Guía para la interfaz Streamlit de GeoForest-AI (app/): etiquetad
 2. Aplica la tabla de `references/labeling-policy.md`.
 3. Verifica sintaxis e imports:
    ```bash
-   source venv/bin/activate
+   source .venv/bin/activate
    python -m py_compile app/main.py app/components/*.py app/services/*.py
    python -m pytest tests/ -q
    ```

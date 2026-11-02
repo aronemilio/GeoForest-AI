@@ -29,7 +29,7 @@ description: Guía para src/unet.py, tests/test_unet.py y los artefactos de mode
 
 1. Verifica la arquitectura y el contrato real:
    ```bash
-   source venv/bin/activate
+   source .venv/bin/activate
    python -c "import onnxruntime as ort; s=ort.InferenceSession('models/unet_geoforest.onnx'); print(s.get_inputs()[0].shape)"
    ```
 2. Cambia la arquitectura o el exportador con pruebas.
